@@ -1,6 +1,7 @@
 """TwinStack ANPR web app: upload videos/photos, watch them processed live, browse the vehicle log."""
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -28,6 +29,7 @@ DSN = os.environ.get("ANPR_DSN", "postgresql:///anpr?host=/var/run/postgresql")
 MAX_UPLOAD = 95 * 1024 * 1024  # Cloudflare rejects request bodies over 100 MB
 MAX_SECONDS = 45.0
 UPLOADS_PER_HOUR = 8
+KEEP_DAYS = 7
 PKT = timezone(timedelta(hours=5))
 
 app = FastAPI(title="TwinStack ANPR", docs_url=None, redoc_url=None)
@@ -89,6 +91,23 @@ def startup():
         c.execute("update jobs set status='failed', error='server restarted' where status in ('queued','processing')")
     engine = ANPR()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=cleaner, daemon=True).start()
+
+
+def cleaner():
+    """Visitors' uploads are kept for KEEP_DAYS, the demo samples forever."""
+    while True:
+        try:
+            with db() as c:
+                old = c.execute("delete from jobs where not sample and created_at < now() - %s * interval '1 day' returning id",
+                                (KEEP_DAYS,)).fetchall()
+            for row in old:
+                for f in UPLOADS.glob(f"{row['id']}.*"):
+                    f.unlink(missing_ok=True)
+                shutil.rmtree(RESULTS / row["id"], ignore_errors=True)
+        except Exception:  # noqa: BLE001  (never let housekeeping kill the server)
+            pass
+        time.sleep(3600)
 
 
 # ---------------- worker ----------------
