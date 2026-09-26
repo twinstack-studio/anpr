@@ -19,6 +19,20 @@ Automatic number plate recognition for Pakistani vehicles. Upload a CCTV clip or
 |---|---|---|
 | ![Photo](docs/photo.png) | ![Log](docs/log.png) | ![Phone](docs/mobile.png) |
 
+## TwinStack Gate: society gate management
+
+A complete gate system for housing societies, built on the same ANPR pipeline, at https://anpr.twinstackstudio.com/society/ (demo password `demo1234` for `admin`, `guard` and `resident`).
+
+- **Live cameras** (RTSP / HTTP stream, or a simulated camera in the demo): every vehicle read at the gate becomes a gate event.
+- **Automatic decision:** resident, staff and service vehicles are allowed, visitors with a valid pass are allowed, blacklisted vehicles raise a red alert, unknown vehicles wait for the guard (English and Urdu prompts).
+- **Guard screen:** live video, pending vehicles with plate and vehicle photos, one-tap allow / deny, manual plate or pass-code check, clip upload.
+- **Management:** dashboard, gate log with CSV export, vehicles inside now and long stays, houses and vehicles (CSV import), visitor passes, blacklist, cameras, accounts and settings.
+- **Resident portal:** own vehicles, who from the house is inside, visitor passes with a 6-letter code, and the house's gate history.
+
+| Dashboard | Guard screen | Resident (phone) |
+|---|---|---|
+| ![Dashboard](docs/gate-dashboard.png) | ![Gate](docs/gate-screen.png) | ![Resident](docs/gate-resident.png) |
+
 ## How it works
 
 ```
@@ -88,11 +102,11 @@ Data: Pakistani plate datasets from Kaggle and Roboflow Universe (CC BY 4.0). De
 ## Project layout
 
 ```
-app/        FastAPI server, ANPR pipeline, OCR wrapper, plate rules
-web/        dashboard (HTML, CSS, vanilla JS)
+app/        FastAPI server, ANPR pipeline, OCR wrapper, plate rules, society gate app (society.py)
+web/        dashboard (HTML, CSS, vanilla JS); web/society/ is the gate app
 training/   dataset builder, plate detector and OCR training
 scripts/    demo sample seeding
-tests/      plate rules tests
+tests/      plate rules and gate rules tests
 ```
 
 ## License
