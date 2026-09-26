@@ -15,9 +15,10 @@ import numpy as np
 import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import society
 from .pipeline import ANPR
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,6 +58,7 @@ create table if not exists jobs (
   process_s real,
   created_at timestamptz not null default now()
 );
+alter table jobs add column if not exists society boolean not null default false;
 create table if not exists detections (
   id bigserial primary key,
   job_id text not null references jobs(id) on delete cascade,
@@ -90,6 +92,8 @@ def startup():
         c.execute(SCHEMA)
         c.execute("update jobs set status='failed', error='server restarted' where status in ('queued','processing')")
     engine = ANPR()
+    society.engine = engine
+    society.startup()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=cleaner, daemon=True).start()
 
@@ -168,7 +172,7 @@ def run_job(job_id: str):
 
     base = job["created_at"]
     with db() as c:
-        for r in recs:
+        for r in ([] if job["society"] else recs):  # society clips go to the gate log only, not the public demo log
             c.execute(
                 """insert into detections (job_id, track, vehicle, plate, confidence, readings, t_first, t_last, direction,
                    plate_img, vehicle_img, seen_at, gate) values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
@@ -177,6 +181,8 @@ def run_job(job_id: str):
             )
         c.execute("update jobs set status='done', progress=1, duration_s=%s, process_s=%s where id=%s",
                   (duration, time.time() - started, job_id))
+    if job["society"]:
+        society.ingest_job(job, recs, out)
 
 
 # ---------------- API ----------------
@@ -185,13 +191,16 @@ def client_ip(req: Request) -> str:
 
 
 @app.post("/api/jobs")
-async def create_job(request: Request, file: UploadFile = File(...), gate: str = Form("entry")):
+async def create_job(request: Request, file: UploadFile = File(...), gate: str = Form("entry"), soc: str = Form("")):
     ip = client_ip(request)
     now = time.time()
     log = upload_log[ip]
     while log and now - log[0] > 3600:
         log.popleft()
-    if len(log) >= UPLOADS_PER_HOUR:
+    for_society = soc == "1"
+    if for_society:
+        society.need("admin", "guard")(society.current_user(request))
+    if len(log) >= UPLOADS_PER_HOUR * (3 if for_society else 1):
         raise HTTPException(429, "Upload limit reached for this hour. Please try again later.")
     ext = Path(file.filename or "").suffix.lower()
     kind = "image" if ext in {".jpg", ".jpeg", ".png", ".webp"} else "video" if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"} else None
@@ -212,7 +221,8 @@ async def create_job(request: Request, file: UploadFile = File(...), gate: str =
             f.write(chunk)
     log.append(now)
     with db() as c:
-        c.execute("insert into jobs (id, kind, filename, gate) values (%s,%s,%s,%s)", (job_id, kind, (file.filename or "upload")[:120], gate))
+        c.execute("insert into jobs (id, kind, filename, gate, society) values (%s,%s,%s,%s,%s)",
+                  (job_id, kind, (file.filename or "upload")[:120], gate, for_society))
     jobs_q.put(job_id)
     return {"id": job_id, "kind": kind}
 
@@ -227,7 +237,7 @@ def _job_json(j):
 @app.get("/api/jobs")
 def list_jobs():
     with db() as c:
-        rows = c.execute("select * from jobs order by sample desc, created_at desc limit 40").fetchall()
+        rows = c.execute("select * from jobs where not society order by sample desc, created_at desc limit 40").fetchall()
     return [_job_json(r) for r in rows]
 
 
@@ -361,6 +371,17 @@ def del_watch(plate: str):
 @app.get("/api/health")
 def health():
     return {"ok": engine is not None, "queue": jobs_q.qsize()}
+
+
+app.include_router(society.router)
+
+
+@app.middleware("http")
+async def gate_host(request: Request, call_next):
+    """gate.twinstackstudio.com opens the society app."""
+    if request.url.path == "/" and request.headers.get("host", "").startswith("gate."):
+        return RedirectResponse("/society/")
+    return await call_next(request)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")

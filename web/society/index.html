@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TwinStack Gate · Society Gate Management</title>
+<meta name="description" content="Automatic number plate recognition for housing society gates: residents' cars open automatically, visitors need a pass, blacklisted vehicles raise an alert. A TwinStack Studio product.">
+<meta name="theme-color" content="#0b1020">
+<link rel="icon" href="/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Noto+Nastaliq+Urdu:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="gate.css?v=2">
+</head>
+<body>
+
+<!-- LOGIN -->
+<section id="login" class="login" hidden>
+  <div class="login-card">
+    <div class="login-brand"><img src="/logo.png" alt=""><div><b>TwinStack Gate</b><small>Society gate management</small></div></div>
+    <form id="login-form">
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary wide">Log in</button>
+      <p class="err" id="login-err" hidden></p>
+    </form>
+    <div class="demo-box" id="demo-box">
+      <p><b>Online demo</b> · password <code>demo1234</code> for all three</p>
+      <div class="demo-accounts">
+        <button data-u="admin"><b>Management</b><small>admin</small></button>
+        <button data-u="guard"><b>Gate guard</b><small>guard</small></button>
+        <button data-u="resident"><b>Resident</b><small>resident · A-12</small></button>
+      </div>
+    </div>
+  </div>
+  <p class="login-foot">A product by <a href="https://twinstackstudio.com" target="_blank" rel="noopener">TwinStack Studio</a> · <a href="/">Plate recognition demo</a></p>
+</section>
+
+<!-- APP -->
+<div id="app" class="app" hidden>
+  <aside class="side" id="side">
+    <div class="side-brand"><img src="/logo.png" alt=""><div><b id="soc-name">Society</b><small>TwinStack Gate</small></div></div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div class="who"><b id="who-name"></b><small id="who-role"></small></div>
+      <button class="btn ghost small" id="logout">Log out</button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menu" aria-label="Menu">☰</button>
+      <h1 id="page-title"></h1>
+      <div class="top-right">
+        <span class="clock" id="clock"></span>
+        <span class="demo-pill" id="demo-pill" hidden>Demo</span>
+      </div>
+    </header>
+    <main id="view"></main>
+  </div>
+</div>
+<div class="scrim" id="scrim" hidden></div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-head"><h3 id="modal-title"></h3><button class="icon-btn" id="modal-close" aria-label="Close">×</button></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+<div id="alert-banner" class="alert-banner" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<div id="tip" class="tip" hidden></div>
+<script src="gate.js?v=2"></script>
+</body>
+</html>

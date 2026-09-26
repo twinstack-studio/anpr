@@ -39,7 +39,8 @@ class Track:
 
 
 class ANPR:
-    _lock = threading.Lock()  # one GPU job at a time
+    _lock = threading.Lock()  # one GPU call at a time
+    _video_lock = threading.Lock()  # one uploaded video at a time
 
     def __init__(self, device: int = 0):
         self.device = device
@@ -154,12 +155,11 @@ class ANPR:
              "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_video)],
             stdin=subprocess.PIPE,
         )
-        tracks: dict[int, Track] = {}
+        ft = FrameTracker(self)
         crops_dir.mkdir(parents=True, exist_ok=True)
         frame_i, done = 0, 0
         started = time.time()
-        with self._lock:
-            self.vehicles.predictor = None  # fresh tracker state per video
+        with self._video_lock:  # one uploaded video at a time; the GPU itself is shared per frame with live cameras
             while frame_i < total:
                 ok, frame = cap.read()
                 if not ok:
@@ -168,45 +168,7 @@ class ANPR:
                 if (frame_i - 1) % step:
                     continue
                 t = (frame_i - 1) / fps
-                tr = self.vehicles.track(frame, imgsz=1280, conf=0.3, classes=list(VEHICLE_CLASSES), persist=True, agnostic_nms=True,
-                                         tracker="bytetrack.yaml", device=self.device, half=True, verbose=False)[0]
-                live = []
-                if tr.boxes.id is not None:
-                    for b, c, i in zip(tr.boxes.xyxy.tolist(), tr.boxes.cls.tolist(), tr.boxes.id.tolist()):
-                        box, vtype, tid = tuple(map(int, b)), VEHICLE_CLASSES[int(c)], int(i)
-                        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-                        if tid not in tracks:
-                            tracks[tid] = Track(tid, vtype, t, t, (cx, cy), (cx, cy))
-                        trk = tracks[tid]
-                        trk.last_t, trk.last_c = t, (cx, cy)
-                        trk.types[vtype] = trk.types.get(vtype, 0) + 1
-                        area = (box[2] - box[0]) * (box[3] - box[1])
-                        if area > trk.vehicle_crop_area:
-                            trk.vehicle_crop, trk.vehicle_crop_area = self._crop(frame, box, 0.02).copy(), area
-                        live.append((box, trk))
-                owned = []
-                for pbox, pconf, i in self.detect_plates_on(frame, [b for b, _ in live]):
-                    own = _owner(pbox, live)  # a big box (bike + riders) can cover another vehicle's plate
-                    owned.append((pbox, pconf, own[1] if own else live[i][1]))
-                texts = self.read_plates([self._crop(frame, p[0]) for p in owned])
-                for (pbox, pconf, trk), (raw, oconf) in zip(owned, texts):
-                    parea = (pbox[2] - pbox[0]) * (pbox[3] - pbox[1])
-                    trk.voter.add(raw, oconf, parea, pconf)
-                    score = oconf * parea ** 0.5
-                    if score > trk.plate_crop_score:
-                        trk.plate_crop, trk.plate_crop_score = self._crop(frame, pbox, 0.15).copy(), score
-                # annotate
-                canvas = frame
-                for box, trk in live:
-                    text, tconf = trk.voter.result()
-                    if text and not _trusted(text, tconf, trk.voter.readings, trk.voter.det_conf):
-                        text = None  # only draw readings that would make it into the log
-                    label = f"{trk.kind} #{trk.id}" + (f"  {text}" if text else "")
-                    _draw_box(canvas, box, label, COLORS[trk.kind])
-                for pbox, _, _ in owned:
-                    cv2.rectangle(canvas, pbox[:2], pbox[2:], COLORS["Plate"], max(2, int(3 / scale)))
-                small = cv2.resize(canvas, (ow, oh), interpolation=cv2.INTER_AREA)
-                _hud(small, t, sum(1 for k in tracks.values() if k.voter.readings and _trusted(*k.voter.result(), k.voter.readings, k.voter.det_conf)))
+                small = ft.step(frame, t, (ow, oh))
                 ff.stdin.write(small.tobytes())
                 done += 1
                 if on_frame and done % 2 == 0:
@@ -217,27 +179,94 @@ class ANPR:
         ff.stdin.close()
         ff.wait()
 
-        records = []
-        for trk in tracks.values():
-            text, conf = trk.voter.result()
-            if text and not _trusted(text, conf, trk.voter.readings, trk.voter.det_conf):
-                text = None
-            if trk.last_t - trk.first_t < 0.5 and not text:
-                continue  # flicker
-            rec = {"track": trk.id, "vehicle": trk.kind, "plate": text, "confidence": conf, "det_conf": round(trk.voter.det_conf, 3), "readings": trk.voter.readings,
-                   "t_first": round(trk.first_t, 2), "t_last": round(trk.last_t, 2),
-                   "direction": _direction(trk.first_c, trk.last_c), "plate_img": None, "vehicle_img": None}
-            if trk.plate_crop is not None and text:
-                p = crops_dir / f"plate_{trk.id}.jpg"
-                cv2.imwrite(str(p), _fit(trk.plate_crop, 360))
-                rec["plate_img"] = p.name
-            if trk.vehicle_crop is not None:
-                p = crops_dir / f"vehicle_{trk.id}.jpg"
-                cv2.imwrite(str(p), _fit(trk.vehicle_crop, 360))
-                rec["vehicle_img"] = p.name
-            records.append(rec)
+        records = [r for r in (ft.record(trk, crops_dir) for trk in ft.tracks.values()) if r]
         records.sort(key=lambda r: r["t_first"])
         return merge_records(records, crops_dir)
+
+
+class FrameTracker:
+    """Vehicle tracking + plate reading one frame at a time. Used for uploaded videos and for live cameras.
+    Each tracker needs its own vehicle model, because ByteTrack keeps its state inside the model."""
+
+    def __init__(self, anpr: ANPR, vehicle_model: YOLO | None = None):
+        self.a = anpr
+        self.model = vehicle_model or anpr.vehicles
+        self.model.predictor = None  # fresh tracker state
+        self.tracks: dict[int, Track] = {}
+
+    def step(self, frame: np.ndarray, t: float, out_size: tuple[int, int]) -> np.ndarray:
+        """Processes one frame taken at time t (seconds). Returns the annotated frame resized to out_size."""
+        a = self.a
+        with a._lock:
+            tr = self.model.track(frame, imgsz=1280, conf=0.3, classes=list(VEHICLE_CLASSES), persist=True, agnostic_nms=True,
+                                  tracker="bytetrack.yaml", device=a.device, half=True, verbose=False)[0]
+            live = []
+            if tr.boxes.id is not None:
+                for b, c, i in zip(tr.boxes.xyxy.tolist(), tr.boxes.cls.tolist(), tr.boxes.id.tolist()):
+                    box, vtype, tid = tuple(map(int, b)), VEHICLE_CLASSES[int(c)], int(i)
+                    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+                    if tid not in self.tracks:
+                        self.tracks[tid] = Track(tid, vtype, t, t, (cx, cy), (cx, cy))
+                    trk = self.tracks[tid]
+                    trk.last_t, trk.last_c = t, (cx, cy)
+                    trk.types[vtype] = trk.types.get(vtype, 0) + 1
+                    area = (box[2] - box[0]) * (box[3] - box[1])
+                    if area > trk.vehicle_crop_area:
+                        trk.vehicle_crop, trk.vehicle_crop_area = a._crop(frame, box, 0.02).copy(), area
+                    live.append((box, trk))
+            owned = []
+            for pbox, pconf, i in a.detect_plates_on(frame, [b for b, _ in live]):
+                own = _owner(pbox, live)  # a big box (bike + riders) can cover another vehicle's plate
+                owned.append((pbox, pconf, own[1] if own else live[i][1]))
+            texts = a.read_plates([a._crop(frame, p[0]) for p in owned])
+        for (pbox, pconf, trk), (raw, oconf) in zip(owned, texts):
+            parea = (pbox[2] - pbox[0]) * (pbox[3] - pbox[1])
+            trk.voter.add(raw, oconf, parea, pconf)
+            score = oconf * parea ** 0.5
+            if score > trk.plate_crop_score:
+                trk.plate_crop, trk.plate_crop_score = a._crop(frame, pbox, 0.15).copy(), score
+        # annotate
+        scale = out_size[0] / frame.shape[1]
+        canvas = frame
+        for box, trk in live:
+            text = self.plate(trk)[0]
+            label = f"{trk.kind} #{trk.id}" + (f"  {text}" if text else "")
+            _draw_box(canvas, box, label, COLORS[trk.kind])
+        for pbox, _, _ in owned:
+            cv2.rectangle(canvas, pbox[:2], pbox[2:], COLORS["Plate"], max(2, int(3 / scale)))
+        small = cv2.resize(canvas, out_size, interpolation=cv2.INTER_AREA)
+        _hud(small, t, sum(1 for k in self.tracks.values() if self.plate(k)[0]))
+        return small
+
+    @staticmethod
+    def plate(trk: Track) -> tuple[str | None, float]:
+        """The track's plate if it is trusted enough to be logged, else (None, conf)."""
+        text, conf = trk.voter.result()
+        if text and not _trusted(text, conf, trk.voter.readings, trk.voter.det_conf):
+            text = None
+        return text, conf
+
+    def finished(self, t: float, idle: float = 2.0) -> list[Track]:
+        """Removes and returns tracks not seen for `idle` seconds (live cameras)."""
+        gone = [k for k, trk in self.tracks.items() if t - trk.last_t > idle]
+        return [self.tracks.pop(k) for k in gone]
+
+    def record(self, trk: Track, crops_dir: Path, prefix: str = "") -> dict | None:
+        text, conf = self.plate(trk)
+        if trk.last_t - trk.first_t < 0.5 and not text:
+            return None  # flicker
+        rec = {"track": trk.id, "vehicle": trk.kind, "plate": text, "confidence": conf, "det_conf": round(trk.voter.det_conf, 3),
+               "readings": trk.voter.readings, "t_first": round(trk.first_t, 2), "t_last": round(trk.last_t, 2),
+               "direction": _direction(trk.first_c, trk.last_c), "plate_img": None, "vehicle_img": None}
+        if trk.plate_crop is not None and text:
+            p = crops_dir / f"{prefix}plate_{trk.id}.jpg"
+            cv2.imwrite(str(p), _fit(trk.plate_crop, 360))
+            rec["plate_img"] = p.name
+        if trk.vehicle_crop is not None:
+            p = crops_dir / f"{prefix}vehicle_{trk.id}.jpg"
+            cv2.imwrite(str(p), _fit(trk.vehicle_crop, 360))
+            rec["vehicle_img"] = p.name
+        return rec
 
 
 def _owner(pbox, vehicles):
