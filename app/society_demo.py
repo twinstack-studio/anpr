@@ -130,7 +130,7 @@ def seed(c):
         add_pass(rng.choice(hid_list), f"{rng.choice(FIRST)} {rng.choice(LAST)}", rand_plate(rng) if rng.random() < 0.6 else None,
                  vf, vf + timedelta(days=rng.choice([0, 0, 1])), rng.choice(PURPOSES))
 
-    cam = c.execute("""insert into soc_cameras (name, gate, source, demo) values ('Main gate · Entry camera', 'entry', 'demo:gate-demo.mp4', true)
+    cam = c.execute("""insert into soc_cameras (name, gate, source, demo, barrier) values ('Main gate · Entry camera', 'entry', 'demo:gate-demo.mp4', true, 'sim')
                        returning id""").fetchone()["id"]
 
     # two weeks of history (no photos; the camera adds real ones)
@@ -201,7 +201,7 @@ def reset():
     from psycopg.rows import dict_row
 
     with psycopg.connect(DSN, row_factory=dict_row, autocommit=True) as c:
-        c.execute("""truncate soc_events, soc_passes, soc_blacklist, soc_vehicles, soc_sessions, soc_users, soc_cameras, soc_houses,
+        c.execute("""truncate soc_push, soc_requests, soc_barrier_log, soc_events, soc_passes, soc_blacklist, soc_vehicles, soc_sessions, soc_users, soc_cameras, soc_houses,
                      soc_settings restart identity cascade""")
         seed(c)
     for p in SOC_DIR.iterdir():

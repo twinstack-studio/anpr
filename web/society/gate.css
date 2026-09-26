@@ -281,3 +281,49 @@ dl.kv dd { margin: 0; }
   dl.kv { grid-template-columns: 110px minmax(0, 1fr); }
   .hide-sm { display: none; }
 }
+
+/* ---------- barrier ---------- */
+.barrier { display: flex; align-items: center; gap: 16px; margin-top: 12px; padding: 12px 16px; border-left: 5px solid var(--bad); }
+.barrier.open { border-left-color: var(--ok); background: var(--ok-soft); }
+.barrier .grow { flex: 1; min-width: 0; }
+.barrier b { display: block; font: 700 18px "Space Grotesk"; color: var(--bad); }
+.barrier.open b { color: var(--ok); }
+.barrier small { color: var(--dim); }
+.boom { position: relative; width: 84px; height: 44px; flex: none; }
+.boom .post { position: absolute; left: 0; bottom: 0; width: 14px; height: 30px; border-radius: 3px; background: var(--dim); }
+.boom .arm { position: absolute; left: 7px; bottom: 22px; width: 76px; height: 8px; border-radius: 4px; transform-origin: 3px 50%;
+  background: repeating-linear-gradient(90deg, var(--bad) 0 12px, #fff 12px 24px); transition: transform 0.9s ease; }
+.barrier.open .arm { transform: rotate(-80deg); }
+@media (prefers-reduced-motion: reduce) { .boom .arm { transition: none; } }
+.barrier-cfg { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 13.5px; }
+.barrier-cfg select { max-width: 100%; }
+
+/* ---------- resident approval ---------- */
+.req { margin-top: 6px; padding: 5px 9px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+.req .ur { font-weight: 500; margin-left: 6px; }
+.req-wait { background: var(--info-soft); color: var(--info); }
+.req-ok { background: var(--ok-soft); color: var(--ok); }
+.req-bad { background: var(--bad-soft); color: var(--bad); }
+.btn.ask { border-color: var(--info); color: var(--info); }
+.req-card { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 14px; background: var(--surface); border: 2px solid var(--info); border-radius: var(--radius);
+  padding: 12px; margin-bottom: 12px; box-shadow: var(--shadow); }
+.req-card:not(:has(.req-pics)) { grid-template-columns: minmax(0, 1fr); }
+.req-card.done { border-width: 1px; border-color: var(--line); }
+.req-card.done.s-approved { background: var(--ok-soft); }
+.req-card.done.s-rejected { background: var(--bad-soft); }
+.req-pics { display: grid; gap: 6px; align-content: start; }
+.req-pics img { width: 100%; max-height: 90px; object-fit: cover; border-radius: 8px; background: #000; display: block; }
+.req-body > b { font: 700 17px "Space Grotesk"; display: block; margin-bottom: 6px; }
+.req-body .row1 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.req-body .btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.req-body .btns .btn { flex: 1; min-width: 120px; justify-content: center; padding: 10px 14px; font-size: 15px; }
+.req-ans { margin-top: 8px; font-weight: 700; }
+.push-card { display: flex; gap: 12px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+  margin-bottom: 16px; font-size: 14px; }
+.push-card .grow { flex: 1; min-width: 0; }
+.push-card.on { background: var(--ok-soft); border-color: transparent; }
+@media (max-width: 520px) {
+  .req-card { grid-template-columns: 96px minmax(0, 1fr); }
+  .barrier { flex-wrap: wrap; }
+  .barrier .btn { width: 100%; justify-content: center; }
+}
