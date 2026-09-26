@@ -28,10 +28,12 @@ A complete gate system for housing societies, built on the same ANPR pipeline, a
 - **Guard screen:** live video, pending vehicles with plate and vehicle photos, one-tap allow / deny, manual plate or pass-code check, clip upload.
 - **Management:** dashboard, gate log with CSV export, vehicles inside now and long stays, houses and vehicles (CSV import), visitor passes, blacklist, cameras, accounts and settings.
 - **Resident portal:** own vehicles, who from the house is inside, visitor passes with a 6-letter code, and the house's gate history.
+- **Barrier control:** the boom barrier opens by itself for allowed vehicles (and when the guard allows one), through a network relay wired to the barrier's "open" input (any relay with an HTTP URL, e.g. Shelly). The guard can open it by hand; every opening is logged. Simulated in the online demo.
+- **Resident approval:** for an unknown vehicle the guard taps *Ask resident*; the house gets a phone notification (Web Push, with Let in / Refuse buttons) or an in-app pop-up. The guard sees the answer and still makes the final decision. Management can turn this off. The app installs to the phone's home screen (needed for notifications on iPhone).
 
-| Dashboard | Guard screen | Resident (phone) |
-|---|---|---|
-| ![Dashboard](docs/gate-dashboard.png) | ![Gate](docs/gate-screen.png) | ![Resident](docs/gate-resident.png) |
+| Dashboard | Guard screen | Resident (phone) | Visitor approval |
+|---|---|---|---|
+| ![Dashboard](docs/gate-dashboard.png) | ![Gate](docs/gate-screen.png) | ![Resident](docs/gate-resident.png) | ![Approval](docs/gate-approval.png) |
 
 ## How it works
 

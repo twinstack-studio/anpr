@@ -11,6 +11,7 @@ import secrets
 import shutil
 import threading
 import time
+import urllib.request
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, StreamingResponse
 from psycopg.rows import dict_row
 
+from . import society_push
 from .gate_rules import check_pw, clean_plate, hash_pw, same_plate  # noqa: F401  (hash_pw used by society_demo)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +36,8 @@ TZ = "Asia/Karachi"
 COOKIE = "gate_session"
 CATEGORIES = ("resident", "staff", "service", "visitor", "unknown", "blacklist", "unreadable")
 DEFAULT_SETTINGS = {"society_name": "Green Valley Residencia", "visitor_hours": "4", "pending_minutes": "20",
-                    "log_unreadable": "1", "dedupe_minutes": "5"}
+                    "log_unreadable": "1", "dedupe_minutes": "5", "barrier_auto": "1", "barrier_visitors": "1",
+                    "resident_approval": "1"}
 
 router = APIRouter(prefix="/api/soc")
 engine = None  # set by server.py (the shared ANPR instance)
@@ -135,6 +138,37 @@ create table if not exists soc_events (
   demo boolean not null default false
 );
 create index if not exists soc_events_at on soc_events(at desc);
+alter table soc_cameras add column if not exists barrier text not null default '';  -- '' none | 'sim' | relay URL
+create table if not exists soc_barrier_log (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  camera_id int references soc_cameras(id) on delete set null,
+  event_id bigint references soc_events(id) on delete set null,
+  reason text not null,                    -- auto | guard | manual
+  user_id int references soc_users(id) on delete set null,
+  note text not null default '',
+  ok boolean not null,
+  error text not null default ''
+);
+create table if not exists soc_requests (
+  id bigserial primary key,
+  event_id bigint not null references soc_events(id) on delete cascade,
+  house_id int not null references soc_houses(id) on delete cascade,
+  visitor text not null default '',
+  asked_by int references soc_users(id) on delete set null,
+  asked_at timestamptz not null default now(),
+  status text not null default 'waiting',  -- waiting | approved | rejected | expired
+  answered_by int references soc_users(id) on delete set null,
+  answered_at timestamptz
+);
+create index if not exists soc_requests_event on soc_requests(event_id);
+create table if not exists soc_push (
+  id serial primary key,
+  user_id int not null references soc_users(id) on delete cascade,
+  endpoint text not null unique,
+  keys jsonb not null,
+  created_at timestamptz not null default now()
+);
 create index if not exists soc_events_plate on soc_events(plate);
 """
 
@@ -257,7 +291,8 @@ def me(u: dict = Depends(ANY)):
     with db() as c:
         s = settings(c)
         house = c.execute("select * from soc_houses where id=%s", (u["house_id"],)).fetchone() if u["house_id"] else None
-    return {"user": dict(u), "house": js(house), "house_label": house_label(house), "society": s["society_name"], "demo": DEMO}
+    return {"user": dict(u), "house": js(house), "house_label": house_label(house), "society": s["society_name"], "demo": DEMO,
+            "resident_approval": s["resident_approval"] == "1"}
 
 
 @router.post("/me/password")
@@ -342,6 +377,10 @@ def ingest(rec: dict, gate: str, at: datetime, source: str, crops_dir: Path | No
         pi = _store_img(crops_dir / rec["plate_img"], ev, "p") if crops_dir and rec.get("plate_img") else None
         vi = _store_img(crops_dir / rec["vehicle_img"], ev, "v") if crops_dir and rec.get("vehicle_img") else None
         c.execute("update soc_events set plate_img=%s, vehicle_img=%s where id=%s", (pi, vi, ev))
+        auto = camera_id and d["status"] == "allowed" and s["barrier_auto"] == "1" and \
+            (d["category"] != "visitor" or s["barrier_visitors"] == "1")
+    if auto:
+        open_barrier(camera_id, "auto", event_id=ev)
     return ev
 
 
@@ -375,6 +414,8 @@ def expire_pending():
     with db() as c:
         m = int(settings(c)["pending_minutes"])
         c.execute("update soc_events set status='no_action' where status='pending' and at < now() - %s * interval '1 minute'", (m,))
+        c.execute("""update soc_requests r set status='expired' from soc_events e
+                     where e.id=r.event_id and r.status='waiting' and e.status<>'pending'""")
 
 
 # ---------------- events ----------------
@@ -387,6 +428,19 @@ def _event_json(e) -> dict:
     d = js(e)
     d["house"] = f"{e['block']}-{e['number']}" if e.get("block") else None
     return d
+
+
+def with_requests(c, events: list[dict]) -> list[dict]:
+    """Adds the latest resident-approval request (if any) to each event."""
+    ids = [e["id"] for e in events]
+    if ids:
+        rows = c.execute("""select distinct on (r.event_id) r.*, u.name as answered_by_name from soc_requests r
+                            left join soc_users u on u.id=r.answered_by where r.event_id = any(%s)
+                            order by r.event_id, r.id desc""", (ids,)).fetchall()
+        by = {r["event_id"]: js(r) for r in rows}
+        for e in events:
+            e["request"] = by.get(e["id"])
+    return events
 
 
 @router.get("/events")
@@ -422,7 +476,7 @@ def list_events(request: Request, since: int = 0, q: str = "", category: str = "
     expire_pending()
     with db() as c:
         rows = c.execute(f"{EVENT_SQL} where {' and '.join(where)} order by e.at desc, e.id desc limit %s", (*args, min(limit, 1000))).fetchall()
-    return [_event_json(r) for r in rows]
+        return with_requests(c, [_event_json(r) for r in rows])
 
 
 @router.get("/events.csv")
@@ -474,7 +528,10 @@ async def manual_event(request: Request, u: dict = Depends(STAFF)):
         if d["status"] != "pending":
             c.execute("update soc_events set decided_by=%s, decided_at=now() where id=%s", (u["id"], ev))
         row = c.execute(f"{EVENT_SQL} where e.id=%s", (ev,)).fetchone()
-    return _event_json(row)
+    out = _event_json(row)
+    if out["status"] == "allowed":
+        out["barrier"] = open_for_gate(gate, "guard", ev, u["id"], body.get("camera_id"))
+    return out
 
 
 @router.post("/events/{ev}/decide")
@@ -493,17 +550,23 @@ async def decide(ev: int, request: Request, u: dict = Depends(STAFF)):
             if not h:
                 raise HTTPException(400, f"House {body['house']} not found")
             house_id = h["id"]
-        if status == "allowed" and category in ("unknown", "unreadable") and (body.get("visitor") or body.get("house")):
-            category = "visitor"
-            visitor = str(body.get("visitor") or "Visitor")[:80]
+        if status == "allowed" and category in ("unknown", "unreadable") and (body.get("visitor") or body.get("house") or (visitor and house_id)):
+            category = "visitor"  # the guard named the house, or asked it first
+            visitor = str(body.get("visitor") or visitor or "Visitor")[:80]
         plate = e["plate"]
         if body.get("plate"):
             plate = clean_plate(body["plate"])
         note = str(body.get("note", "") or e["note"])[:200]
         c.execute("""update soc_events set status=%s, category=%s, house_id=%s, visitor=%s, plate=%s, note=%s, decided_by=%s, decided_at=now()
                      where id=%s""", (status, category, house_id, visitor, plate, note, u["id"], ev))
+        c.execute("update soc_requests set status='expired' where event_id=%s and status='waiting'", (ev,))
         row = c.execute(f"{EVENT_SQL} where e.id=%s", (ev,)).fetchone()
-    return _event_json(row)
+    out = _event_json(row)
+    # open the barrier only for a vehicle that is at the gate now (not for old or uploaded events)
+    if status == "allowed" and e["status"] == "pending" and e["source"] != "upload" and body.get("open", True):
+        out["barrier"] = (open_barrier(e["camera_id"], "guard", ev, u["id"]) if e["camera_id"]
+                          else open_for_gate(e["gate"], "guard", ev, u["id"], body.get("camera_id")))
+    return out
 
 
 def find_house(c, label: str):
@@ -1020,6 +1083,8 @@ class CameraWorker:
                 try:
                     small = ft.step(frame.copy(), t, (int(w * sc) // 2 * 2, int(h * sc) // 2 * 2))
                     self._events(ft, emitted, t, w * h)
+                    if self.cam.get("barrier"):
+                        draw_barrier(small, barrier_left(self.cam["id"]) > 0)
                 except Exception as e:  # noqa: BLE001
                     self.error = str(e)[:200]
                     time.sleep(0.5)
@@ -1095,12 +1160,15 @@ class Cameras:
             for cid, cam in cams.items():
                 if cid not in self.workers:
                     self.workers[cid] = CameraWorker(cam)
+                else:
+                    self.workers[cid].cam = cam
 
     def status(self, cid: int) -> dict:
         w = self.workers.get(cid)
+        left = round(barrier_left(cid), 1)
         if not w:
-            return {"state": "off", "fps": 0, "error": ""}
-        return {"state": w.state, "fps": round(w.fps, 1), "error": w.error}
+            return {"state": "off", "fps": 0, "error": "", "barrier_open": left > 0, "barrier_left": left}
+        return {"state": w.state, "fps": round(w.fps, 1), "error": w.error, "barrier_open": left > 0, "barrier_left": left}
 
 
 cameras = Cameras()
@@ -1109,6 +1177,8 @@ cameras = Cameras()
 def _cam_json(r) -> dict:
     d = js(r)
     d.update(cameras.status(r["id"]))
+    d["barrier_kind"] = barrier_kind(r["barrier"])
+    d["barrier"] = r["barrier"].split("://", 1)[-1].split("/", 1)[0].split("@")[-1] if d["barrier_kind"] == "relay" else ""
     if r["demo"]:
         d["source"] = "Simulated camera (sample video)"
     elif "@" in r["source"]:  # hide the camera password
@@ -1129,7 +1199,15 @@ async def save_camera(request: Request, u: dict = Depends(ADMIN)):
     name = str(b.get("name", "")).strip()[:60]
     gate = b.get("gate") if b.get("gate") in ("entry", "exit", "both") else "entry"
     source = str(b.get("source", "")).strip()
+    barrier = str(b.get("barrier", "")).strip() if "barrier" in b else None
+    if barrier and barrier != "sim":
+        if DEMO:
+            raise HTTPException(400, "In the online demo the barrier is simulated. On your site we connect your barrier through a relay.")
+        if barrier.split("://")[0] not in ("http", "https"):
+            raise HTTPException(400, "The barrier relay address must start with http:// (for example http://192.168.1.50/relay/0?turn=on&timer=2)")
     with db() as c:
+        if barrier is not None and b.get("id"):
+            c.execute("update soc_cameras set barrier=%s where id=%s", (barrier[:300], b["id"]))
         if b.get("id"):
             cam = c.execute("select * from soc_cameras where id=%s", (b["id"],)).fetchone()
             if not cam:
@@ -1145,7 +1223,7 @@ async def save_camera(request: Request, u: dict = Depends(ADMIN)):
                 raise HTTPException(400, "In the online demo cameras are simulated. On your site we connect your own CCTV cameras (RTSP).")
             if not name or not source.split("://")[0] in ("rtsp", "rtsps", "http", "https"):
                 raise HTTPException(400, "Enter a name and an RTSP or HTTP camera address")
-            c.execute("insert into soc_cameras (name, gate, source) values (%s,%s,%s)", (name, gate, source))
+            c.execute("insert into soc_cameras (name, gate, source, barrier) values (%s,%s,%s,%s)", (name, gate, source, (barrier or "")[:300]))
     cameras.sync()
     return {"ok": True}
 
@@ -1192,6 +1270,203 @@ def camera_wake(cid: int, u: dict = Depends(ANY)):
     return cameras.status(cid)
 
 
+# ---------------- barrier ----------------
+BARRIER_SECONDS = 8  # how long the gate screen shows the barrier as open
+barrier_until: dict[int, float] = {}
+
+
+def barrier_kind(cfg: str) -> str:
+    return "none" if not cfg else "sim" if cfg == "sim" else "relay"
+
+
+def barrier_left(cid: int) -> float:
+    return max(0.0, barrier_until.get(cid, 0) - time.time())
+
+
+def draw_barrier(img: np.ndarray, is_open: bool):
+    h, w = img.shape[:2]
+    text = "BARRIER OPEN" if is_open else "BARRIER CLOSED"
+    colour = (60, 170, 40) if is_open else (40, 40, 200)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    x, y = w - tw - 22, h - 14
+    cv2.rectangle(img, (x - 10, y - th - 10), (w - 12, y + 8), colour, -1)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+def _barrier_log(cid: int, event_id, reason: str, user_id, note: str, ok: bool, error: str = ""):
+    with db() as c:
+        c.execute("""insert into soc_barrier_log (camera_id, event_id, reason, user_id, note, ok, error)
+                     values (%s,%s,%s,%s,%s,%s,%s)""", (cid, event_id, reason, user_id, note[:200], ok, error[:200]))
+
+
+def open_barrier(camera_id: int | None, reason: str, event_id: int | None = None, user_id: int | None = None,
+                 note: str = "") -> dict | None:
+    """Opens the barrier of a camera's lane. Returns None when that lane has no barrier.
+    A relay is pulsed in the background so a slow relay never holds up the gate screen or the camera."""
+    if not camera_id:
+        return None
+    with db() as c:
+        cam = c.execute("select id, name, barrier from soc_cameras where id=%s", (camera_id,)).fetchone()
+    if not cam or not cam["barrier"]:
+        return None
+    kind = barrier_kind(cam["barrier"])
+    barrier_until[cam["id"]] = time.time() + BARRIER_SECONDS
+    if kind == "sim":
+        _barrier_log(cam["id"], event_id, reason, user_id, note, True)
+    else:
+        def pulse():
+            try:
+                with urllib.request.urlopen(cam["barrier"], timeout=4) as r:
+                    ok = r.status < 400
+                _barrier_log(cam["id"], event_id, reason, user_id, note, ok, "" if ok else f"relay answered {r.status}")
+            except Exception as e:  # noqa: BLE001
+                barrier_until.pop(cam["id"], None)
+                _barrier_log(cam["id"], event_id, reason, user_id, note, False, str(e))
+        threading.Thread(target=pulse, daemon=True).start()
+    return {"camera_id": cam["id"], "camera": cam["name"], "kind": kind}
+
+
+def open_for_gate(gate: str, reason: str, event_id: int | None, user_id: int | None, camera_id=None) -> dict | None:
+    """For events without a camera (typed in by the guard): opens the given lane, or the first lane with a barrier for this gate."""
+    with db() as c:
+        if camera_id:
+            cam = c.execute("select id from soc_cameras where id=%s and barrier<>''", (int(camera_id),)).fetchone()
+        else:
+            cam = c.execute("""select id from soc_cameras where enabled and barrier<>'' and gate in (%s, 'both')
+                               order by (gate=%s) desc, id limit 1""", (gate, gate)).fetchone()
+    return open_barrier(cam["id"], reason, event_id, user_id) if cam else None
+
+
+@router.post("/cameras/{cid}/barrier")
+async def barrier_button(cid: int, request: Request, u: dict = Depends(STAFF)):
+    """The guard opens the barrier by hand (logged with a note)."""
+    try:
+        b = await request.json()
+    except Exception:  # noqa: BLE001
+        b = {}
+    res = open_barrier(cid, "manual", user_id=u["id"], note=str(b.get("note", "")).strip())
+    if not res:
+        raise HTTPException(400, "No barrier is connected to this lane")
+    return dict(res, **cameras.status(cid))
+
+
+@router.get("/barrier/log")
+def barrier_log(limit: int = 30, u: dict = Depends(ADMIN)):
+    with db() as c:
+        rows = c.execute("""select l.*, cam.name as camera, u.name as user_name, e.plate, e.category from soc_barrier_log l
+                            left join soc_cameras cam on cam.id=l.camera_id left join soc_users u on u.id=l.user_id
+                            left join soc_events e on e.id=l.event_id order by l.id desc limit %s""", (min(limit, 200),)).fetchall()
+    return [js(r) for r in rows]
+
+
+# ---------------- resident approval ----------------
+def _drop_sub(endpoint: str):
+    with db() as c:
+        c.execute("delete from soc_push where endpoint=%s", (endpoint,))
+
+
+@router.post("/events/{ev}/ask")
+async def ask_resident(ev: int, request: Request, u: dict = Depends(STAFF)):
+    """The guard asks the house a visitor names; the house's residents approve or reject on their phones.
+    The guard still makes the final decision at the gate."""
+    b = await request.json()
+    with db() as c:
+        if settings(c)["resident_approval"] != "1":
+            raise HTTPException(400, "Asking residents is turned off in Settings")
+        e = c.execute("select * from soc_events where id=%s", (ev,)).fetchone()
+        if not e:
+            raise HTTPException(404)
+        if e["status"] != "pending":
+            raise HTTPException(400, "This vehicle has already been decided")
+        if e["category"] == "blacklist":
+            raise HTTPException(400, "A blacklisted vehicle cannot be let in")
+        h = find_house(c, b.get("house", ""))
+        if not h:
+            raise HTTPException(400, f"House {b.get('house', '')} not found")
+        users = [r["id"] for r in c.execute("select id from soc_users where role='resident' and house_id=%s", (h["id"],)).fetchall()]
+        if not users:
+            raise HTTPException(400, f"House {house_label(h)} has no resident account. Call the house"
+                                     + (f": {h['phone']}" if h["phone"] else "") + ".")
+        visitor = str(b.get("visitor") or "").strip()[:80] or "Visitor"
+        c.execute("update soc_requests set status='expired' where event_id=%s and status='waiting'", (ev,))
+        rid = c.execute("insert into soc_requests (event_id, house_id, visitor, asked_by) values (%s,%s,%s,%s) returning id",
+                        (ev, h["id"], visitor, u["id"])).fetchone()["id"]
+        c.execute("update soc_events set house_id=%s, visitor=%s where id=%s", (h["id"], visitor, ev))
+        subs = c.execute("select endpoint, keys from soc_push where user_id = any(%s)", (users,)).fetchall()
+        row = with_requests(c, [_event_json(c.execute(f"{EVENT_SQL} where e.id=%s", (ev,)).fetchone())])[0]
+    society_push.send([dict(x) for x in subs], {
+        "title": f"{visitor} is at the gate",
+        "body": f"{e['plate'] or 'Plate not read'} · {e['vehicle'] or 'Vehicle'} · Let them in?",
+        "tag": f"req-{rid}", "request_id": rid, "url": "/society/#/home"}, on_gone=_drop_sub)
+    return dict(row, notified=len(subs))
+
+
+def _request_json(r) -> dict:
+    d = js(r)
+    d["house"] = f"{r['block']}-{r['number']}" if r.get("block") else None
+    return d
+
+
+@router.get("/requests")
+def list_requests(u: dict = Depends(need("resident"))):
+    expire_pending()
+    with db() as c:
+        rows = c.execute("""select r.*, e.plate, e.vehicle, e.plate_img, e.vehicle_img, e.at as event_at, e.gate, e.status as event_status,
+                                   h.block, h.number, g.name as asked_by_name
+                            from soc_requests r join soc_events e on e.id=r.event_id join soc_houses h on h.id=r.house_id
+                            left join soc_users g on g.id=r.asked_by
+                            where r.house_id=%s and r.asked_at > now() - interval '1 day' order by r.id desc limit 20""",
+                         (u["house_id"],)).fetchall()
+    return [_request_json(r) for r in rows]
+
+
+@router.post("/requests/{rid}/answer")
+async def answer_request(rid: int, request: Request, u: dict = Depends(need("resident"))):
+    b = await request.json()
+    ans = b.get("answer")
+    if ans not in ("approved", "rejected"):
+        raise HTTPException(400, "answer must be approved or rejected")
+    expire_pending()
+    with db() as c:
+        r = c.execute("select * from soc_requests where id=%s", (rid,)).fetchone()
+        if not r or r["house_id"] != u["house_id"]:
+            raise HTTPException(404)
+        if r["status"] != "waiting":
+            raise HTTPException(400, "Already answered" if r["status"] in ("approved", "rejected") else "Too late: the guard has already decided")
+        c.execute("update soc_requests set status=%s, answered_by=%s, answered_at=now() where id=%s", (ans, u["id"], rid))
+    return {"ok": True, "status": ans}
+
+
+# ---------------- phone notifications ----------------
+@router.get("/push/key")
+def push_key(u: dict = Depends(ANY)):
+    return {"key": society_push.public_key()}
+
+
+@router.post("/push/subscribe")
+async def push_subscribe(request: Request, u: dict = Depends(ANY)):
+    b = await request.json()
+    endpoint, keys = str(b.get("endpoint", "")), b.get("keys") or {}
+    if not endpoint.startswith("https://") or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(400, "Invalid subscription")
+    import json
+
+    with db() as c:
+        c.execute("""insert into soc_push (user_id, endpoint, keys) values (%s,%s,%s)
+                     on conflict (endpoint) do update set user_id=excluded.user_id, keys=excluded.keys""",
+                  (u["id"], endpoint[:1000], json.dumps({"p256dh": keys["p256dh"], "auth": keys["auth"]})))
+    return {"ok": True}
+
+
+@router.post("/push/test")
+def push_test(u: dict = Depends(ANY)):
+    with db() as c:
+        subs = c.execute("select endpoint, keys from soc_push where user_id=%s", (u["id"],)).fetchall()
+    society_push.send([dict(x) for x in subs], {"title": "Notifications are on", "body": "You will be asked here when a visitor for your house is at the gate.",
+                                                "tag": "test", "url": "/society/#/home"}, on_gone=_drop_sub)
+    return {"sent": len(subs)}
+
+
 # ---------------- startup ----------------
 def startup():
     with db() as c:
@@ -1200,6 +1475,8 @@ def startup():
             from .society_demo import seed
 
             seed(c)
+        if DEMO:  # demo cameras created before the barrier feature
+            c.execute("update soc_cameras set barrier='sim' where demo and barrier=''")
     cameras.sync()
 
     def housekeeping():

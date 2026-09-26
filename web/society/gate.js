@@ -171,6 +171,17 @@ function verdictText(e) {
   if (e.gate === "exit") return "Leaving";
   return "Allowed in";
 }
+const REQ = {
+  waiting: (r) => `<div class="req req-wait">⏳ Asked House ${esc(r.house || "")}: waiting for reply…</div>`,
+  approved: (r) => `<div class="req req-ok">✓ House ${esc(r.house || "")} said YES${r.answered_by_name ? ` (${esc(r.answered_by_name)})` : ""} <span class="ur">گھر والوں نے اجازت دی</span></div>`,
+  rejected: (r) => `<div class="req req-bad">✗ House ${esc(r.house || "")} said NO <span class="ur">گھر والوں نے انکار کیا</span></div>`,
+  expired: () => "",
+};
+function reqLine(e) {
+  const r = e.request;
+  if (!r) return "";
+  return (REQ[r.status] || REQ.expired)({ ...r, house: e.house });
+}
 function evCard(e, { decide = false } = {}) {
   const pics = [e.plate_img, e.vehicle_img].filter(Boolean).map((p) => `<img src="${img(p)}" alt="" loading="lazy">`).join("") || `<div class="noimg">🚗</div>`;
   const who = [e.house ? `House ${esc(e.house)}` : "", e.owner && e.category === "resident" ? esc(e.owner) : "", e.visitor ? esc(e.visitor) : "", e.note ? esc(e.note) : ""].filter(Boolean).join(" · ");
@@ -180,7 +191,9 @@ function evCard(e, { decide = false } = {}) {
       <div class="row1">${plateTag(e.plate)} ${catTag(e.category)} ${gateTag(e.gate)}</div>
       <div class="row2">${who || esc(e.vehicle || "Vehicle")}</div>
       <div class="row3">${fmtTime(e.at)} · ${esc(e.vehicle || "")} · ${statusTag(e.status)}${e.camera ? " · " + esc(e.camera) : e.source === "manual" ? " · typed by guard" : e.source === "upload" ? " · uploaded clip" : ""}</div>
+      ${e.status === "pending" || e.request?.status !== "expired" ? reqLine(e) : ""}
       ${decide && e.status === "pending" ? `<div class="btns">
+        ${ME.resident_approval && e.category !== "blacklist" && e.request?.status !== "waiting" ? `<button class="btn small ask" data-act="ask">📱 Ask resident</button>` : ""}
         <button class="btn ok small" data-act="visitor">Allow as visitor</button>
         <button class="btn small" data-act="allow">Allow</button>
         <button class="btn bad small" data-act="deny">Deny</button></div>` : ""}
@@ -194,22 +207,41 @@ function bindEvCards(root, list, after) {
       if (act === "allow") return decideEvent(e, "allowed", {}, after);
       if (act === "deny") return decideEvent(e, "denied", {}, after);
       if (act === "visitor") return visitorForm(e, after);
+      if (act === "ask") return askForm(e, after);
       showEvent(e, after);
     };
   });
 }
+let gateCam = null;  // camera shown on the gate screen (its barrier opens for typed-in vehicles)
+const barrierMsg = (r) => (r?.barrier ? ` · barrier opening (${r.barrier.camera})` : "");
 async function decideEvent(e, status, extra, after) {
   try {
-    await api(`events/${e.id}/decide`, { method: "POST", body: { status, ...extra } });
-    toast(status === "allowed" ? "Allowed" : "Denied");
+    const r = await api(`events/${e.id}/decide`, { method: "POST", body: { status, camera_id: gateCam, ...extra } });
+    toast(status === "allowed" ? "Allowed" + barrierMsg(r) : "Denied");
     closeModal();
     after && after();
   } catch (err) { toast(err.message, true); }
 }
+function askForm(e, after) {
+  modal("Ask the resident", `<form id="af" class="form-grid">
+      <p class="full muted" style="margin:0">The house gets a notification on their phone with this vehicle. You still decide at the gate. <span class="ur">گھر والوں سے فون پر پوچھیں</span></p>
+      ${ME.demo ? `<p class="full note-box" style="margin:0">Demo: house <b>A-12</b> has the resident account. Log in as <code>resident</code> on your phone to answer.</p>` : ""}
+      <label>House they are visiting<input name="house" placeholder="e.g. A-12" value="${esc(e.house || (ME.demo ? "A-12" : ""))}" required></label>
+      <label>Visitor name<input name="visitor" placeholder="Name they gave" value="${esc(e.visitor || "")}"></label>
+      <div class="actions full"><button type="button" class="btn" id="af-cancel">Cancel</button><button class="btn primary">📱 Send to the house</button></div></form>`, (b) => {
+    $("#af-cancel", b).onclick = closeModal;
+    bindForm($("#af", b), async (d) => {
+      const r = await api(`events/${e.id}/ask`, { method: "POST", body: d });
+      closeModal();
+      toast(`Sent to House ${r.house}${r.notified ? ` · ${r.notified} phone${r.notified > 1 ? "s" : ""} notified` : " · shown in their app"}`);
+      after && after();
+    });
+  });
+}
 function visitorForm(e, after) {
   modal("Allow as visitor", `<form id="vf" class="form-grid">
-      <label>House you are visiting<input name="house" placeholder="e.g. A-12" required></label>
-      <label>Visitor name<input name="visitor" placeholder="Name" required></label>
+      <label>House you are visiting<input name="house" placeholder="e.g. A-12" value="${esc(e.house || "")}" required></label>
+      <label>Visitor name<input name="visitor" placeholder="Name" value="${esc(e.visitor || "")}" required></label>
       <label class="full">Plate<input name="plate" value="${esc(e.plate || "")}" placeholder="Plate if the camera missed it"></label>
       <label class="full">Note<input name="note" placeholder="e.g. Called the house, confirmed"></label>
       <div class="actions full"><button type="button" class="btn" id="vf-cancel">Cancel</button><button class="btn ok">Allow in</button></div></form>`, (b) => {
@@ -232,6 +264,7 @@ function showEvent(e, after) {
       ${e.note ? `<dt>Note</dt><dd>${esc(e.note)}</dd>` : ""}
       <dt>Source</dt><dd>${e.camera ? esc(e.camera) : e.source === "manual" ? "Typed in by guard" : e.source === "upload" ? "Uploaded clip" : "Camera"}</dd>
       ${e.decided_by_name ? `<dt>Decided by</dt><dd>${esc(e.decided_by_name)} · ${fmtDT(e.decided_at)}</dd>` : ""}
+      ${e.request && e.request.status !== "expired" ? `<dt>Resident</dt><dd>${reqLine(e)}</dd>` : ""}
     </dl>
     ${staff ? `<div class="actions">
       <button class="btn ok" data-a="visitor">Allow as visitor</button>
@@ -253,6 +286,11 @@ VIEWS.gate = async (v) => {
     <div class="gate-left">
       <div class="cam-wrap"><div class="cam-tabs" id="cam-tabs"></div>
       <div class="cam" id="cam"><div class="cam-msg" id="cam-msg">Loading camera…</div><img id="cam-img" alt="" hidden><span class="cam-label" id="cam-label" hidden></span></div></div>
+      <div class="barrier card" id="barrier" hidden>
+        <div class="boom" aria-hidden="true"><span class="post"></span><span class="arm"></span></div>
+        <div class="grow"><b id="b-state">Barrier closed</b><small id="b-sub" class="ur">گیٹ بند ہے</small></div>
+        <button class="btn primary" id="b-open">Open barrier <span class="ur">گیٹ کھولیں</span></button>
+      </div>
       <div class="card manual">
         <h3>Check a vehicle or pass <span class="ur">گاڑی یا پاس چیک کریں</span></h3>
         <form id="manual">
@@ -286,6 +324,8 @@ VIEWS.gate = async (v) => {
   }
   function openCam() {
     const c = cams.find((x) => x.id === camId);
+    gateCam = c?.id || null;
+    $("#barrier").hidden = !c || c.barrier_kind === "none";
     if (!c) { camMsg.innerHTML = `<b>No camera connected</b><span>Add a camera in Cameras, or upload a clip below.</span>`; return; }
     camLabel.innerHTML = `<span class="dot" id="cam-dot"></span>${esc(c.name)}`;
     camLabel.hidden = false;
@@ -298,13 +338,39 @@ VIEWS.gate = async (v) => {
   }
   renderTabs();
   openCam();
-  onLeave(() => { camImg.onerror = null; camImg.removeAttribute("src"); });
+  onLeave(() => { camImg.onerror = null; camImg.removeAttribute("src"); gateCam = null; });
+
+  // barrier state (also keeps a simulated camera awake)
+  function showBarrier(st) {
+    const open = !!st.barrier_open;
+    $("#barrier").classList.toggle("open", open);
+    $("#b-state").textContent = open ? "Barrier open" : "Barrier closed";
+    $("#b-sub").textContent = open ? "گیٹ کھلا ہے" : "گیٹ بند ہے";
+  }
+  async function pollBarrier() {
+    if (!gateCam || $("#barrier").hidden) return;
+    try { showBarrier(await api(`cameras/${gateCam}/wake`, { method: "POST" })); } catch {}
+  }
+  const bTimer = setInterval(pollBarrier, 1000);
+  onLeave(() => clearInterval(bTimer));
+  $("#b-open").onclick = async () => {
+    try { showBarrier(await api(`cameras/${gateCam}/barrier`, { method: "POST", body: {} })); toast("Barrier opened by hand (logged)"); } catch (err) { toast(err.message, true); }
+  };
 
   // events
   let feed = [], pending = [];
+  const answered = new Map();
   async function load() {
     const [recent, pend] = await Promise.all([api("events?limit=25"), api(`events?status=pending&day_from=${todayISO()}&limit=30`)]);
     feed = recent; pending = pend;
+    for (const e of pending) {
+      const st = e.request?.status;
+      if (st && answered.has(e.id) && answered.get(e.id) === "waiting" && (st === "approved" || st === "rejected")) {
+        beep(st === "approved" ? 1 : 2);
+        toast(`House ${e.house} said ${st === "approved" ? "YES" : "NO"} for ${e.plate || e.visitor || "the vehicle"}`, st === "rejected");
+      }
+      if (st) answered.set(e.id, st);
+    }
     render();
   }
   function render() {
@@ -328,17 +394,17 @@ VIEWS.gate = async (v) => {
   await load();
   const onNew = (e) => { if (e.detail.length) load(); };
   document.addEventListener("gate-events", onNew);
-  const timer = setInterval(load, 8000);
+  const timer = setInterval(() => document.visibilityState === "visible" && load(), 4000);
   onLeave(() => { document.removeEventListener("gate-events", onNew); clearInterval(timer); });
 
   bindForm($("#manual"), async (d, form) => {
     const q = d.q.trim().toUpperCase();
     const maybeCode = /^[A-Z0-9]{6}$/.test(q);  // a 6-character entry is tried as a pass code first, then as a plate
-    const e = await api("events", { method: "POST", body: { plate: q, code: maybeCode ? q : "", gate: d.gate } });
+    const e = await api("events", { method: "POST", body: { plate: q, code: maybeCode ? q : "", gate: d.gate, camera_id: gateCam } });
     form.reset();
     await load();
-    if (e.status === "pending") visitorForm(e, load);
-    else toast(`${e.plate || e.visitor}: ${CAT[e.category]} · ${STATUS[e.status]}`, e.status === "denied");
+    if (e.status === "pending") (ME.resident_approval ? askForm : visitorForm)(e, load);
+    else toast(`${e.plate || e.visitor}: ${CAT[e.category]} · ${STATUS[e.status]}${barrierMsg(e)}`, e.status === "denied");
   });
 
   $("#clip").onchange = async (ev) => {
@@ -655,18 +721,40 @@ VIEWS.cameras = async (v) => {
         <label class="full">Camera address (RTSP)<input name="source" placeholder="rtsp://user:password@192.168.1.64:554/Streaming/Channels/101" required></label>
         <div class="actions full"><button class="btn primary" ${ME.demo ? "disabled" : ""}>Add camera</button></div>
       </form>
-      <p class="muted" style="font-size:13px;margin:8px 0 0">Tip: mount the camera at 3–6 m in front of the lane at plate height (not high above the road), 1080p or better, with IR for night.</p></div>`;
+      <p class="muted" style="font-size:13px;margin:8px 0 0">Tip: mount the camera at 3–6 m in front of the lane at plate height (not high above the road), 1080p or better, with IR for night.</p></div>
+    <div class="card" style="margin-top:16px"><h3>Barrier openings</h3>
+      <p class="muted" style="font-size:13.5px;margin:0 0 10px">The barrier opens by itself for vehicles the system allows, and when a guard allows a vehicle. A guard can also open it by hand; every opening is recorded here. At your society a small network relay is wired to the barrier's "open" input.</p>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Lane</th><th>Why</th><th>Vehicle</th><th>By</th><th></th></tr></thead><tbody id="blog"></tbody></table></div></div>`;
+  api("barrier/log?limit=25").then((rows) => {
+    const why = { auto: "Automatic", guard: "Guard allowed", manual: "Opened by hand" };
+    $("#blog").innerHTML = rows.length ? rows.map((r) => `<tr><td>${fmtDT(r.at)}</td><td>${esc(r.camera || "")}</td><td>${why[r.reason] || r.reason}${r.note ? ` · ${esc(r.note)}` : ""}</td>
+      <td>${r.plate ? plateTag(r.plate) : "–"}</td><td>${esc(r.user_name || (r.reason === "auto" ? "System" : ""))}</td><td>${r.ok ? "" : `<span class="tag c-blacklist">failed</span> <span class="muted">${esc(r.error)}</span>`}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">No openings yet.</td></tr>`;
+  }).catch(() => {});
   $("#list").innerHTML = cams.map((c) => `<div class="card cam-card">
       <div class="thumb">${c.state === "online" ? `<img src="/api/soc/cameras/${c.id}/live" alt="">` : ""}</div>
       <div><h3 style="margin-bottom:4px">${esc(c.name)}</h3>
         <div class="muted" style="font-size:13.5px">${c.gate === "both" ? "Entry and exit" : c.gate === "exit" ? "Exit lane" : "Entry lane"} · ${esc(c.source)}</div>
         <div style="margin-top:6px"><span class="state ${c.state}">● ${c.state}${c.fps ? ` · ${c.fps} fps` : ""}</span> ${c.error ? `<span class="muted">${esc(c.error)}</span>` : ""}</div>
         ${c.demo ? `<p class="muted" style="font-size:13px;margin:6px 0 0">Simulated cameras pause when nobody is watching. Open the Gate screen to start it.</p>` : ""}
+        <div class="barrier-cfg"><b>Barrier</b>
+          <select data-bk="${c.id}"><option value="none" ${c.barrier_kind === "none" ? "selected" : ""}>No barrier</option><option value="sim" ${c.barrier_kind === "sim" ? "selected" : ""}>Simulated (demo)</option><option value="relay" ${c.barrier_kind === "relay" ? "selected" : ""}>Relay${c.barrier ? ` · ${esc(c.barrier)}` : ""}</option></select>
+          ${c.barrier_kind !== "none" ? `<span class="state ${c.barrier_open ? "online" : "paused"}">● ${c.barrier_open ? "open" : "closed"}</span>` : ""}</div>
         <div class="actions" style="justify-content:flex-start">
           <select data-g="${c.id}">${["entry", "exit", "both"].map((g) => `<option value="${g}" ${c.gate === g ? "selected" : ""}>${g}</option>`).join("")}</select>
           ${c.demo ? "" : `<button class="btn small" data-t="${c.id}">${c.enabled ? "Turn off" : "Turn on"}</button><button class="btn small ghost" data-d="${c.id}">Remove</button>`}
         </div></div></div>`).join("") || `<p class="muted">No cameras yet.</p>`;
   $$("[data-g]", v).forEach((s) => (s.onchange = async () => { const c = cams.find((x) => x.id === +s.dataset.g); await api("cameras", { method: "POST", body: { id: c.id, name: c.name, gate: s.value, enabled: c.enabled } }); toast("Saved"); route(true); }));
+  $$("[data-bk]", v).forEach((s) => (s.onchange = async () => {
+    const c = cams.find((x) => x.id === +s.dataset.bk);
+    let barrier = s.value === "none" ? "" : s.value;
+    if (s.value === "relay") {
+      barrier = prompt("Relay address that opens the barrier (called once per opening), for example\nhttp://192.168.1.50/relay/0?turn=on&timer=2", "http://");
+      if (!barrier) return route(true);
+    }
+    try { await api("cameras", { method: "POST", body: { id: c.id, name: c.name, gate: c.gate, enabled: c.enabled, barrier } }); toast("Saved"); } catch (e) { toast(e.message, true); }
+    route(true);
+  }));
   $$("[data-t]", v).forEach((b) => (b.onclick = async () => { const c = cams.find((x) => x.id === +b.dataset.t); await api("cameras", { method: "POST", body: { id: c.id, name: c.name, gate: c.gate, enabled: !c.enabled } }); route(true); }));
   $$("[data-d]", v).forEach((b) => (b.onclick = async () => { if (!confirm("Remove this camera? Its past gate events are kept.")) return; await api(`cameras/${b.dataset.d}`, { method: "DELETE" }); route(true); }));
   bindForm($("#cf"), async (d) => { await api("cameras", { method: "POST", body: d }); toast("Camera added"); route(true); });
@@ -705,6 +793,9 @@ VIEWS.settings = async (v) => {
       <label>Unanswered vehicles expire after (minutes)<input type="number" name="pending_minutes" value="${esc(s.pending_minutes)}" min="1" max="600"></label>
       <label>Ignore repeat reads of the same plate for (minutes)<input type="number" name="dedupe_minutes" value="${esc(s.dedupe_minutes)}" min="0" max="120"></label>
       <label>Log vehicles whose plate cannot be read<select name="log_unreadable"><option value="1" ${s.log_unreadable === "1" ? "selected" : ""}>Yes, guard checks them</option><option value="0" ${s.log_unreadable === "0" ? "selected" : ""}>No</option></select></label>
+      <label>Open the barrier automatically<select name="barrier_auto"><option value="1" ${s.barrier_auto === "1" ? "selected" : ""}>Yes, for vehicles the system allows</option><option value="0" ${s.barrier_auto === "0" ? "selected" : ""}>No, the guard opens it</option></select></label>
+      <label>…also for visitors with a pass<select name="barrier_visitors"><option value="1" ${s.barrier_visitors === "1" ? "selected" : ""}>Yes</option><option value="0" ${s.barrier_visitors === "0" ? "selected" : ""}>No, guard checks visitors</option></select></label>
+      <label class="full">Guards can ask residents to approve visitors on their phone<select name="resident_approval"><option value="1" ${s.resident_approval === "1" ? "selected" : ""}>Yes (the guard still makes the final decision)</option><option value="0" ${s.resident_approval === "0" ? "selected" : ""}>No, guards call the house</option></select></label>
       <div class="actions full"><button class="btn primary">Save settings</button></div></form></div>` : ""}
     <div class="card"><h3>Change your password</h3><form id="pw" class="form-grid">
       <label class="full">Current password<input type="password" name="old" required autocomplete="current-password"></label>
@@ -718,7 +809,7 @@ VIEWS.settings = async (v) => {
 VIEWS.home = async (v) => {
   const [houses, passes, events, inside] = await Promise.all([api("my-house").catch(() => null), api("passes?scope=active"), api("events?limit=30"), api("inside")]);
   const h = houses;
-  v.innerHTML = `<div class="grid g2">
+  v.innerHTML = `<div id="req-box"></div><div id="push-box"></div><div class="grid g2">
     <div class="card"><h3>House ${esc(ME.house_label)} <span class="right muted">${esc(h?.owner || "")}</span></h3>
       <div class="section-title">Your vehicles</div><div id="veh"></div>
       <button class="btn" id="vadd" style="margin-top:10px">+ Add vehicle</button>
@@ -738,7 +829,92 @@ VIEWS.home = async (v) => {
   $("#pnew").onclick = () => passModal(() => {}, true);
   $("#feed").innerHTML = events.length ? events.slice(0, 15).map((e) => evCard(e)).join("") : `<p class="muted">No activity yet.</p>`;
   bindEvCards($("#feed"), events);
+  renderRequests(lastRequests);
+  pushCard();
 };
+
+/* ---------- resident: visitor approval requests ---------- */
+let lastRequests = [], currentView = "";
+const seenReq = new Set(), poppedReq = new Set();
+function reqCard(r) {
+  const pics = [r.vehicle_img, r.plate_img].filter(Boolean).map((p) => `<img src="${img(p)}" alt="">`).join("");
+  const done = r.status !== "waiting";
+  return `<div class="req-card ${done ? "done s-" + r.status : ""}" data-r="${r.id}">
+    ${pics ? `<div class="req-pics">${pics}</div>` : ""}
+    <div class="req-body">
+      <b>${esc(r.visitor)} is at the ${r.gate === "exit" ? "exit" : "gate"}</b>
+      <div class="row1">${plateTag(r.plate)} <span class="muted">${r.vehicle ? esc(r.vehicle) + " · " : ""}asked ${fmtTime(r.asked_at)}${r.asked_by_name ? ` by ${esc(r.asked_by_name)}` : ""}</span></div>
+      ${done ? `<div class="req-ans">${r.status === "approved" ? "✓ You let them in" : r.status === "rejected" ? "✗ You refused" : "Expired: the guard decided"}</div>`
+        : `<div class="ur" style="margin:4px 0">کیا یہ آپ کے مہمان ہیں؟</div><div class="btns"><button class="btn ok" data-ans="approved">✓ Let in <span class="ur">اجازت</span></button><button class="btn bad" data-ans="rejected">✗ Refuse <span class="ur">انکار</span></button></div>`}
+    </div></div>`;
+}
+function bindReq(root, after) {
+  $$("[data-ans]", root).forEach((b) => (b.onclick = async () => {
+    const id = b.closest("[data-r]").dataset.r;
+    try {
+      await api(`requests/${id}/answer`, { method: "POST", body: { answer: b.dataset.ans } });
+      toast(b.dataset.ans === "approved" ? "The guard has been told to let them in" : "The guard has been told to refuse");
+    } catch (e) { toast(e.message, true); }
+    after && after();
+  }));
+}
+function renderRequests(list) {
+  const box = $("#req-box");
+  if (!box) return;
+  const show = list.filter((r) => r.status === "waiting" || Date.now() - new Date(r.answered_at || r.asked_at) < 30 * 60000)
+    .sort((a, b) => (b.status === "waiting") - (a.status === "waiting")).slice(0, 4);
+  box.innerHTML = show.length ? `<div class="section-title">Visitors at the gate</div>${show.map(reqCard).join("")}` : "";
+  bindReq(box, pollRequests);
+}
+async function pollRequests() {
+  if (!ME || ME.user.role !== "resident") return;
+  try { lastRequests = await api("requests"); } catch { return; }
+  renderRequests(lastRequests);
+  const shown = $("#modal-body [data-r]");  // close a pop-up that was answered elsewhere or expired
+  if (shown && lastRequests.find((r) => String(r.id) === shown.dataset.r)?.status !== "waiting") closeModal();
+  const waiting = lastRequests.filter((r) => r.status === "waiting");
+  if (waiting.some((r) => !seenReq.has(r.id))) beep(2);
+  waiting.forEach((r) => seenReq.add(r.id));
+  const pop = waiting.find((r) => !poppedReq.has(r.id));
+  if (pop && currentView && currentView !== "home" && $("#modal").hidden) {  // not on the home page: pop it up once
+    poppedReq.add(pop.id);
+    modal("Visitor at the gate", reqCard(pop), (b) => bindReq(b, () => { closeModal(); pollRequests(); }));
+  }
+}
+setInterval(() => document.visibilityState === "visible" && pollRequests(), 4000);
+
+/* ---------- phone notifications ---------- */
+const b64key = (s) => { const p = "=".repeat((4 - (s.length % 4)) % 4); const r = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(r, (c) => c.charCodeAt(0)); };
+async function pushCard() {
+  const box = $("#push-box");
+  if (!box) return;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  let on = false;
+  if (supported && Notification.permission === "granted") {
+    const reg = await navigator.serviceWorker.getRegistration("/society/");
+    on = !!(reg && (await reg.pushManager.getSubscription()));
+  }
+  if (on) { box.innerHTML = `<div class="push-card on">🔔 <span class="grow">Phone notifications are on. You will be asked here when a visitor for your house is at the gate.</span><button class="btn small" id="push-test">Test</button></div>`; }
+  else if (!supported && ios && !standalone) { box.innerHTML = `<div class="push-card">🔔 <span class="grow"><b>Get gate notifications on iPhone:</b> tap Share, then “Add to Home Screen”, open TwinStack Gate from the home screen and turn notifications on.</span></div>`; }
+  else if (!supported) { box.innerHTML = `<div class="push-card">🔔 <span class="grow">This browser cannot show notifications. Keep this page open, or use Chrome on your phone.</span></div>`; }
+  else if (Notification.permission === "denied") { box.innerHTML = `<div class="push-card">🔕 <span class="grow">Notifications are blocked for this site. Allow them in your browser's site settings.</span></div>`; }
+  else { box.innerHTML = `<div class="push-card">🔔 <span class="grow"><b>Turn on notifications</b> so the gate can ask you when a visitor arrives, even when this page is closed. <span class="ur">مہمان آنے پر فون پر اطلاع</span></span><button class="btn primary small" id="push-on">Turn on</button></div>`; }
+  $("#push-on") && ($("#push-on").onclick = async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("/society/sw.js", { scope: "/society/" });
+      await navigator.serviceWorker.ready;
+      if ((await Notification.requestPermission()) !== "granted") return pushCard();
+      const { key } = await api("push/key");
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64key(key) });
+      await api("push/subscribe", { method: "POST", body: sub.toJSON() });
+      toast("Notifications are on");
+    } catch (e) { toast("Could not turn on notifications: " + e.message, true); }
+    pushCard();
+  });
+  $("#push-test") && ($("#push-test").onclick = async () => { const r = await api("push/test", { method: "POST" }); toast(r.sent ? "Test notification sent" : "No phone registered yet"); });
+}
 
 /* ================= ROUTER ================= */
 const MENU = {
@@ -759,6 +935,10 @@ async function route(keep = false) {
   cleanup.forEach((f) => { try { f(); } catch {} });
   cleanup = [];
   hideTip();
+  const req = $("#modal-body [data-r]");  // a visitor pop-up closed by navigation pops up again on the next page
+  if (req) poppedReq.delete(+req.dataset.r);
+  closeModal();
+  currentView = name;
   const v = $("#view");
   if (!keep) v.innerHTML = `<p class="muted">Loading…</p>`;
   try { await VIEWS[name](v); } catch (e) { if (e.message !== "Please log in") v.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -790,6 +970,7 @@ async function start() {
     $("#app").hidden = false;
     alertSince = 0;
     route();
+    if (ME.user.role === "resident") pollRequests();
   } catch { showLogin(); }
 }
 
@@ -812,3 +993,5 @@ $("#menu").onclick = () => { $("#side").classList.add("open"); $("#scrim").hidde
 $("#scrim").onclick = () => { $("#side").classList.remove("open"); $("#scrim").hidden = true; };
 setInterval(() => ($("#clock").textContent = new Date().toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: TZ })), 1000);
 start();
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/society/sw.js", { scope: "/society/" }).catch(() => {});
