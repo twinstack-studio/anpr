@@ -31,6 +31,8 @@ A complete gate system for housing societies, built on the same ANPR pipeline, a
 - **Barrier control:** the boom barrier opens by itself for allowed vehicles (and when the guard allows one), through a network relay wired to the barrier's "open" input (any relay with an HTTP URL, e.g. Shelly). The guard can open it by hand; every opening is logged. Simulated in the online demo.
 - **Resident approval:** for an unknown vehicle the guard taps *Ask resident*; the house gets a phone notification (Web Push, with Let in / Refuse buttons) or an in-app pop-up. The guard sees the answer and still makes the final decision. Management can turn this off. The app installs to the phone's home screen (needed for notifications on iPhone).
 
+**Installing at a society:** a mini PC at the gate (no GPU needed), one installer script. Hardware list and steps: [docs/INSTALL.md](docs/INSTALL.md).
+
 | Dashboard | Guard screen | Resident (phone) | Visitor approval |
 |---|---|---|---|
 | ![Dashboard](docs/gate-dashboard.png) | ![Gate](docs/gate-screen.png) | ![Resident](docs/gate-resident.png) | ![Approval](docs/gate-approval.png) |
@@ -108,6 +110,7 @@ app/        FastAPI server, ANPR pipeline, OCR wrapper, plate rules, society gat
 web/        dashboard (HTML, CSS, vanilla JS); web/society/ is the gate app
 training/   dataset builder, plate detector and OCR training
 scripts/    demo sample seeding
+deploy/     installer for a society's gate PC (install.sh)
 tests/      plate rules and gate rules tests
 ```
 
