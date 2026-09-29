@@ -34,6 +34,9 @@ CLIP = {
     "LEQ-7234B": ("resident", "C", "3", "Yamaha YBR", "Bike", "Blue"),
     "LEN-8209": ("resident", "A", "18", "Honda CD 70", "Bike", "Red"),
     "LES-5033": ("service", None, None, "Water tanker (Al-Madina Water)", "Truck", "Blue"),
+    # gate lane clip (a barrier lane, like a society gate): ALZ-002 is left unknown for the ask-the-resident flow
+    "AAA-251": ("resident", "B", "9", "Changan Alsvin", "Car", "White"),
+    "YZ-1": ("resident", "C", "1", "Toyota Land Cruiser", "Car", "White"),
 }
 CLIP_VISITOR = "AZF-52"
 CLIP_BLACKLIST = ("LEB-3789", "Stolen vehicle, FIR no. 1142/26 Model Town")
@@ -130,8 +133,9 @@ def seed(c):
         add_pass(rng.choice(hid_list), f"{rng.choice(FIRST)} {rng.choice(LAST)}", rand_plate(rng) if rng.random() < 0.6 else None,
                  vf, vf + timedelta(days=rng.choice([0, 0, 1])), rng.choice(PURPOSES))
 
-    cam = c.execute("""insert into soc_cameras (name, gate, source, demo, barrier) values ('Main gate · Entry camera', 'entry', 'demo:gate-demo.mp4', true, 'sim')
+    cam = c.execute("""insert into soc_cameras (name, gate, source, demo, barrier) values ('Main gate · Entry lane', 'entry', 'demo:gate-lane.mp4', true, 'sim')
                        returning id""").fetchone()["id"]
+    c.execute("""insert into soc_cameras (name, gate, source, demo, barrier) values ('Main road · Outside camera', 'entry', 'demo:gate-demo.mp4', true, '')""")
 
     # two weeks of history (no photos; the camera adds real ones)
     events = []

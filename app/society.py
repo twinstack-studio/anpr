@@ -1492,7 +1492,7 @@ def startup():
             else:
                 first_run(c)
         if DEMO:  # demo cameras created before the barrier feature
-            c.execute("update soc_cameras set barrier='sim' where demo and barrier=''")
+            c.execute("update soc_cameras set barrier='sim' where demo and barrier='' and name like 'Main gate%'")
     cameras.sync()
 
     def housekeeping():
