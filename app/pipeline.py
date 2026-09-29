@@ -1,4 +1,5 @@
 """ANPR pipeline: vehicle detection + tracking, plate detection, plate OCR, per-vehicle voting."""
+import os
 import subprocess
 import threading
 import time
@@ -13,6 +14,13 @@ from .plates import PlateVoter, normalize
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS = ROOT / "models"
+
+# Hardware settings. The server uses the GPU; a gate mini PC without a GPU sets ANPR_DEVICE=cpu, which also picks
+# a smaller vehicle model and image size so one camera still runs at a few frames per second.
+DEVICE = os.environ.get("ANPR_DEVICE", "0")
+ON_GPU = DEVICE != "cpu"
+VEHICLE_MODEL = os.environ.get("ANPR_VEHICLE_MODEL", "yolo11m.pt" if ON_GPU else "yolo11n.pt")
+TRACK_SIZE = int(os.environ.get("ANPR_IMGSZ", 1280 if ON_GPU else 640))
 
 VEHICLE_CLASSES = {2: "Car", 3: "Bike", 5: "Bus", 7: "Truck"}
 COLORS = {"Car": (80, 200, 255), "Bike": (120, 255, 140), "Bus": (255, 170, 80), "Truck": (200, 140, 255), "Plate": (0, 230, 255)}
@@ -42,9 +50,10 @@ class ANPR:
     _lock = threading.Lock()  # one GPU call at a time
     _video_lock = threading.Lock()  # one uploaded video at a time
 
-    def __init__(self, device: int = 0):
-        self.device = device
-        self.vehicles = YOLO(str(MODELS / "yolo11m.pt"))
+    def __init__(self, device: int | str = DEVICE):
+        self.device = int(device) if str(device).isdigit() else device
+        self.half = ON_GPU
+        self.vehicles = YOLO(str(MODELS / VEHICLE_MODEL))
         self.plates = YOLO(str(MODELS / "plate_detector.pt"))
         custom = MODELS / "pk_plate_ocr.keras"
         if custom.exists():  # our OCR fine-tuned on Pakistani plates (training/ocr/train_ocr.py)
@@ -73,7 +82,7 @@ class ANPR:
         return out
 
     def detect_plates(self, frame: np.ndarray, conf=0.4, imgsz=1280):
-        r = self.plates.predict(frame, imgsz=imgsz, conf=conf, device=self.device, half=True, verbose=False)[0]
+        r = self.plates.predict(frame, imgsz=imgsz, conf=conf, device=self.device, half=self.half, verbose=False)[0]
         return [(tuple(map(int, b)), float(c)) for b, c in zip(r.boxes.xyxy.tolist(), r.boxes.conf.tolist())]
 
     def detect_plates_on(self, frame: np.ndarray, boxes: list[tuple], conf=0.4, max_n=24):
@@ -93,7 +102,7 @@ class ANPR:
         if not crops:
             return []
         out = []
-        for r, (ox, oy, i) in zip(self.plates.predict(crops, imgsz=640, conf=conf, device=self.device, half=True, verbose=False), offs):
+        for r, (ox, oy, i) in zip(self.plates.predict(crops, imgsz=640, conf=conf, device=self.device, half=self.half, verbose=False), offs):
             if not len(r.boxes):
                 continue
             k = int(r.boxes.conf.argmax())  # one plate per vehicle
@@ -117,7 +126,7 @@ class ANPR:
     def process_image(self, img: np.ndarray) -> tuple[list[dict], np.ndarray]:
         sz = min(1280, -(-max(img.shape[:2]) // 32) * 32)  # never upscale: big close-up cars get missed
         with self._lock:
-            vr = self.vehicles.predict(img, imgsz=sz, conf=0.35, classes=list(VEHICLE_CLASSES), device=self.device, half=True, verbose=False)[0]
+            vr = self.vehicles.predict(img, imgsz=sz, conf=0.35, classes=list(VEHICLE_CLASSES), device=self.device, half=self.half, verbose=False)[0]
             vehicles = [(tuple(map(int, b)), VEHICLE_CLASSES[int(c)]) for b, c in zip(vr.boxes.xyxy.tolist(), vr.boxes.cls.tolist())]
             plates = [(b, c) for b, c, _ in self.detect_plates_on(img, [b for b, _ in vehicles])]
             for b, c in self.detect_plates(img, imgsz=sz):
@@ -198,8 +207,8 @@ class FrameTracker:
         """Processes one frame taken at time t (seconds). Returns the annotated frame resized to out_size."""
         a = self.a
         with a._lock:
-            tr = self.model.track(frame, imgsz=1280, conf=0.3, classes=list(VEHICLE_CLASSES), persist=True, agnostic_nms=True,
-                                  tracker="bytetrack.yaml", device=a.device, half=True, verbose=False)[0]
+            tr = self.model.track(frame, imgsz=TRACK_SIZE, conf=0.3, classes=list(VEHICLE_CLASSES), persist=True, agnostic_nms=True,
+                                  tracker="bytetrack.yaml", device=a.device, half=a.half, verbose=False)[0]
             live = []
             if tr.boxes.id is not None:
                 for b, c, i in zip(tr.boxes.xyxy.tolist(), tr.boxes.cls.tolist(), tr.boxes.id.tolist()):

@@ -27,6 +27,7 @@ UPLOADS, RESULTS = DATA / "uploads", DATA / "results"
 for d in (UPLOADS, RESULTS):
     d.mkdir(parents=True, exist_ok=True)
 DSN = os.environ.get("ANPR_DSN", "postgresql:///anpr?host=/var/run/postgresql")
+GATE_ONLY = os.environ.get("SOC_ONLY") == "1"  # a society's gate box: "/" opens the gate app, not the plate-reading demo
 MAX_UPLOAD = 95 * 1024 * 1024  # Cloudflare rejects request bodies over 100 MB
 MAX_SECONDS = 45.0
 UPLOADS_PER_HOUR = 8
@@ -378,8 +379,8 @@ app.include_router(society.router)
 
 @app.middleware("http")
 async def gate_host(request: Request, call_next):
-    """gate.twinstackstudio.com opens the society app."""
-    if request.url.path == "/" and request.headers.get("host", "").startswith("gate."):
+    """gate.twinstackstudio.com, and every gate box (SOC_ONLY=1), open the society app."""
+    if request.url.path == "/" and (GATE_ONLY or request.headers.get("host", "").startswith("gate.")):
         return RedirectResponse("/society/")
     return await call_next(request)
 

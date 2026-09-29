@@ -1038,7 +1038,7 @@ class CameraWorker:
                     time.sleep(delay)
 
     def run(self):
-        from .pipeline import FrameTracker, MODELS
+        from .pipeline import FrameTracker, MODELS, VEHICLE_MODEL
         from ultralytics import YOLO
 
         model = None
@@ -1063,7 +1063,7 @@ class CameraWorker:
                 continue
             backoff = 2
             if model is None:
-                model = YOLO(str(MODELS / "yolo11m.pt"))
+                model = YOLO(str(MODELS / VEHICLE_MODEL))
             ft = FrameTracker(engine, model)
             emitted: dict[int, int] = {}
             rd = threading.Thread(target=self.reader, args=(cap, is_file), daemon=True)
@@ -1468,13 +1468,29 @@ def push_test(u: dict = Depends(ANY)):
 
 
 # ---------------- startup ----------------
+def first_run(c):
+    """A real society's first start: an empty register with one admin account, both taken from the environment
+    (SOC_NAME, SOC_ADMIN_USER, SOC_ADMIN_PASSWORD; set by deploy/install.sh). Houses, guards and cameras are added in the app."""
+    name = os.environ.get("SOC_NAME", "").strip() or "Our Society"
+    user = os.environ.get("SOC_ADMIN_USER", "admin").strip().lower() or "admin"
+    pw = os.environ.get("SOC_ADMIN_PASSWORD", "")
+    if len(pw) < 8:
+        raise RuntimeError("SOC_ADMIN_PASSWORD must be set (at least 8 characters) for the first start of a real society")
+    c.execute("insert into soc_settings (key, value) values ('society_name', %s) on conflict (key) do update set value=excluded.value",
+              (name,))
+    c.execute("insert into soc_users (username, name, password, role) values (%s, 'Administrator', %s, 'admin')", (user, hash_pw(pw)))
+
+
 def startup():
     with db() as c:
         c.execute(SCHEMA)
         if not c.execute("select 1 from soc_users limit 1").fetchone():
-            from .society_demo import seed
+            if DEMO:
+                from .society_demo import seed
 
-            seed(c)
+                seed(c)
+            else:
+                first_run(c)
         if DEMO:  # demo cameras created before the barrier feature
             c.execute("update soc_cameras set barrier='sim' where demo and barrier=''")
     cameras.sync()
