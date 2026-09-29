@@ -893,7 +893,7 @@ async function pushCard() {
   const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   let on = false;
   if (supported && Notification.permission === "granted") {
-    const reg = await navigator.serviceWorker.getRegistration("/society/");
+    const reg = await navigator.serviceWorker.getRegistration("/");
     on = !!(reg && (await reg.pushManager.getSubscription()));
   }
   if (on) { box.innerHTML = `<div class="push-card on">🔔 <span class="grow">Phone notifications are on. You will be asked here when a visitor for your house is at the gate.</span><button class="btn small" id="push-test">Test</button></div>`; }
@@ -903,7 +903,7 @@ async function pushCard() {
   else { box.innerHTML = `<div class="push-card">🔔 <span class="grow"><b>Turn on notifications</b> so the gate can ask you when a visitor arrives, even when this page is closed. <span class="ur">مہمان آنے پر فون پر اطلاع</span></span><button class="btn primary small" id="push-on">Turn on</button></div>`; }
   $("#push-on") && ($("#push-on").onclick = async () => {
     try {
-      const reg = await navigator.serviceWorker.register("/society/sw.js", { scope: "/society/" });
+      const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
       await navigator.serviceWorker.ready;
       if ((await Notification.requestPermission()) !== "granted") return pushCard();
       const { key } = await api("push/key");
@@ -994,4 +994,4 @@ $("#scrim").onclick = () => { $("#side").classList.remove("open"); $("#scrim").h
 setInterval(() => ($("#clock").textContent = new Date().toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: TZ })), 1000);
 start();
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/society/sw.js", { scope: "/society/" }).catch(() => {});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});

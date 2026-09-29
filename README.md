@@ -1,27 +1,12 @@
-# TwinStack ANPR
+# TwinStack Gate (ANPR)
 
-Automatic number plate recognition for Pakistani vehicles. Upload a CCTV clip or a photo, watch every vehicle get detected, tracked and its number plate read live, then browse the vehicle log, parking sessions and watchlist alerts.
+Automatic number plate recognition for Pakistani vehicles, and TwinStack Gate, a complete gate system for housing societies built on it.
 
-**Live demo:** https://anpr.twinstackstudio.com
+**Live demo:** https://anpr.twinstackstudio.com (password `demo1234` for `admin`, `guard` and `resident`)
 
-![Monitor view: vehicles tracked and plates read on a Lahore street](docs/monitor.png)
-
-## What it does
-
-- **Reads Pakistani plates** from Punjab, Sindh, Islamabad and KP, including two-line plates with the registration year (LEA-20-4060) and suffix letters (LE-16-5471A).
-- **Tracks every vehicle** (car, bike, bus, truck) through the clip and reads its plate many times, then votes on the best reading.
-- **Live processing view:** the annotated video streams to the browser while the clip is analysed.
-- **Vehicle log** with plate crops, time, gate and confidence, searchable by plate.
-- **Parking:** clips uploaded as *Entry gate* open a session per plate, clips uploaded as *Exit gate* close it and compute the fee.
-- **Watchlist:** blacklist, VIP and staff plates are flagged whenever they are read.
-
-| Photo mode | Vehicle log | Phone |
-|---|---|---|
-| ![Photo](docs/photo.png) | ![Log](docs/log.png) | ![Phone](docs/mobile.png) |
+The pipeline reads Punjab, Sindh, Islamabad and KP plates, including two-line plates with the registration year (LEA-20-4060) and suffix letters (LE-16-5471A). It tracks every vehicle (car, bike, bus, truck) through the video, reads its plate many times and votes on the best reading.
 
 ## TwinStack Gate: society gate management
-
-A complete gate system for housing societies, built on the same ANPR pipeline, at https://anpr.twinstackstudio.com/society/ (demo password `demo1234` for `admin`, `guard` and `resident`).
 
 - **Live cameras** (RTSP / HTTP stream, or a simulated camera in the demo): every vehicle read at the gate becomes a gate event.
 - **Automatic decision:** resident, staff and service vehicles are allowed, visitors with a valid pass are allowed, blacklisted vehicles raise a red alert, unknown vehicles wait for the guard (English and Urdu prompts).
@@ -107,7 +92,7 @@ Data: Pakistani plate datasets from Kaggle and Roboflow Universe (CC BY 4.0). De
 
 ```
 app/        FastAPI server, ANPR pipeline, OCR wrapper, plate rules, society gate app (society.py)
-web/        dashboard (HTML, CSS, vanilla JS); web/society/ is the gate app
+web/        the gate app (HTML, CSS, vanilla JS); old /society/ links redirect to /
 training/   dataset builder, plate detector and OCR training
 scripts/    demo sample seeding
 deploy/     installer for a society's gate PC (install.sh)

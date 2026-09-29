@@ -3,153 +3,75 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TwinStack ANPR · Number Plate Recognition</title>
-<meta name="description" content="Automatic number plate recognition for Pakistani vehicles. Upload a CCTV clip or photo and watch vehicles detected, tracked and plates read live. A TwinStack Studio computer vision demo.">
-<meta property="og:title" content="TwinStack ANPR · Number Plate Recognition">
-<meta property="og:description" content="Computer vision demo by TwinStack Studio: vehicle tracking and Pakistani number plate reading from CCTV video.">
-<link rel="icon" href="logo.png">
+<title>TwinStack Gate · Society Gate Management</title>
+<meta name="description" content="Automatic number plate recognition for housing society gates: residents' cars open automatically, visitors need a pass, blacklisted vehicles raise an alert. A TwinStack Studio product.">
+<meta name="theme-color" content="#0b1020">
+<link rel="icon" href="/logo.png">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="app.css?v=6">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&family=Noto+Nastaliq+Urdu:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="gate.css?v=3">
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="/"><img src="logo.png" alt=""><span>TwinStack <b>ANPR</b></span></a>
-  <nav id="tabs">
-    <button data-tab="monitor" class="on">Monitor</button>
-    <button data-tab="log">Vehicle log</button>
-    <button data-tab="parking">Parking</button>
-    <button data-tab="watch">Watchlist</button>
-    <button data-tab="about">How it works</button>
-  </nav>
-  <a class="studio" href="https://twinstackstudio.com" target="_blank" rel="noopener">by TwinStack Studio ↗</a>
-</header>
 
-<main>
-  <section class="stats" id="stats">
-    <div><span id="st-vehicles">0</span><small>vehicles tracked</small></div>
-    <div><span id="st-plates">0</span><small>plates read</small></div>
-    <div><span id="st-unique">0</span><small>unique plates</small></div>
-    <div><span id="st-alerts">0</span><small>watchlist alerts</small></div>
-    <div><span id="st-video">0s</span><small>video analysed</small></div>
-  </section>
-
-  <!-- MONITOR -->
-  <section class="tab on" id="tab-monitor">
-    <div class="monitor">
-      <div class="left">
-        <div class="screen" id="screen">
-          <div class="screen-empty" id="screen-empty">
-            <div class="scanline"></div>
-            <p class="big">Upload a CCTV clip or a photo of a car</p>
-            <p>…or pick one of the sample clips below. Vehicles are tracked frame by frame and each number plate is read and logged.</p>
-          </div>
-          <img id="live" alt="" hidden>
-          <video id="player" controls muted playsinline hidden></video>
-          <img id="still" alt="" hidden>
-          <div class="progress" id="progress" hidden><div id="progress-bar"></div><span id="progress-text"></span></div>
-        </div>
-
-        <div class="controls">
-          <label class="drop" id="drop">
-            <input type="file" id="file" accept="video/*,image/*">
-            <span class="drop-icon">⤒</span>
-            <span><b>Upload video or photo</b><small>MP4, MOV, JPG, PNG · up to 95 MB · first 45 s analysed</small></span>
-          </label>
-          <div class="gate">
-            <span>Camera at</span>
-            <div class="seg" id="gate">
-              <button data-v="entry" class="on">Entry gate</button>
-              <button data-v="exit">Exit gate</button>
-              <button data-v="none">Street</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="jobs">
-          <h3>Clips</h3>
-          <div id="jobs" class="job-list"></div>
-        </div>
-      </div>
-
-      <aside class="feed">
-        <div class="feed-head"><h3>Detections</h3><span id="feed-count" class="pill">0</span></div>
-        <div id="feed" class="feed-list"><p class="muted">Detected vehicles will appear here.</p></div>
-      </aside>
-    </div>
-  </section>
-
-  <!-- LOG -->
-  <section class="tab" id="tab-log">
-    <div class="bar">
-      <h2>Vehicle log</h2>
-      <input id="search" type="search" placeholder="Search plate, e.g. LEB 1234">
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Plate</th><th>Crop</th><th>Vehicle</th><th>Seen at</th><th>Gate</th><th>Confidence</th><th>Clip</th></tr></thead>
-        <tbody id="log"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- PARKING -->
-  <section class="tab" id="tab-parking">
-    <div class="bar">
-      <h2>Parking</h2>
-      <div class="rates">First hour Rs <input id="rate1" type="number" value="50" min="0"> then Rs <input id="rate2" type="number" value="30" min="0"> / hour</div>
-    </div>
-    <p class="muted">Clips uploaded as <b>Entry gate</b> open a session for every plate, clips uploaded as <b>Exit gate</b> close it and work out the fee.</p>
-    <div class="two">
-      <div class="card"><h3>Inside now <span class="pill" id="inside-count">0</span></h3><div id="inside" class="mini-list"></div></div>
-      <div class="card"><h3>Completed sessions</h3>
-        <div class="table-wrap"><table><thead><tr><th>Plate</th><th>Entry</th><th>Exit</th><th>Stay</th><th>Fee</th></tr></thead><tbody id="sessions"></tbody></table></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- WATCHLIST -->
-  <section class="tab" id="tab-watch">
-    <div class="bar"><h2>Watchlist</h2></div>
-    <p class="muted">Add stolen, banned or VIP vehicles. Whenever one of them is read, the detection is flagged in the feed and the log.</p>
-    <form id="watch-form" class="watch-form">
-      <input name="plate" placeholder="Plate, e.g. LEB-1234" required>
-      <select name="kind"><option value="blacklist">Blacklist</option><option value="vip">VIP</option><option value="staff">Staff</option></select>
-      <input name="note" placeholder="Note (optional)">
-      <button class="btn">Add</button>
+<!-- LOGIN -->
+<section id="login" class="login" hidden>
+  <div class="login-card">
+    <div class="login-brand"><img src="/logo.png" alt=""><div><b>TwinStack Gate</b><small>Society gate management</small></div></div>
+    <form id="login-form">
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary wide">Log in</button>
+      <p class="err" id="login-err" hidden></p>
     </form>
-    <div id="watch" class="watch-list"></div>
-  </section>
-
-  <!-- ABOUT -->
-  <section class="tab" id="tab-about">
-    <div class="about">
-      <h2>How it works</h2>
-      <ol class="steps">
-        <li><b>Vehicle detection &amp; tracking.</b> A YOLO11 model finds cars, bikes, buses and trucks in every frame. ByteTrack gives each vehicle an ID that follows it through the clip.</li>
-        <li><b>Plate detection, trained by us.</b> A second YOLO11 model, fine-tuned on 1,578 photos of Pakistani number plates (Punjab, Sindh, Islamabad, KP), looks for the plate inside each vehicle. On held-out photos it scores 100% precision and 97.4% recall (mAP50 97.5%).</li>
-        <li><b>Plate reading (OCR), trained by us.</b> A compact vision-transformer OCR model, fine-tuned on 1,471 hand-checked Pakistani plate crops, reads the characters on the GPU. On vehicles it never saw in training it reads the full plate correctly 88% of the time (79% before our training), with 97% of characters correct.</li>
-        <li><b>Pakistani plate rules.</b> Readings are cleaned for local formats (LEB-1234, BKA-123, LEA-20-4060, LE-16-5471A): letters and digits that look alike (0/O, 8/B, 5/S) are fixed based on their position on the plate.</li>
-        <li><b>Voting over frames.</b> A plate is read many times while the vehicle passes. The readings are combined, weighted by confidence and plate size, so one blurry frame does not decide the result. Weak or one-off readings are dropped.</li>
-        <li><b>Business logic.</b> Each vehicle is logged with time, gate, direction and crops. Entry and exit clips become parking sessions with fees, and watchlist plates raise alerts.</li>
-      </ol>
-      <div class="metrics">
-        <div><b>97.5%</b><span>plate detection mAP50</span></div>
-        <div><b>88%</b><span>full-plate reads on unseen vehicles</span></div>
-        <div><b>97%</b><span>characters read correctly</span></div>
-        <div><b>8 fps</b><span>on 4K video, one GPU</span></div>
-      </div>
-      <div class="use">
-        <h3>Where this is used</h3>
-        <div class="chips"><span>Housing society gates</span><span>Plaza &amp; hospital parking</span><span>Factory &amp; warehouse gates</span><span>University campuses</span><span>Fuel stations</span><span>Fleet &amp; logistics yards</span></div>
-        <p>It runs on existing IP/CCTV cameras (RTSP) or on uploaded footage, on a local PC with a GPU or in the cloud. <a href="https://twinstackstudio.com" target="_blank" rel="noopener">Talk to TwinStack Studio</a> about a setup for your site.</p>
+    <div class="demo-box" id="demo-box">
+      <p><b>Online demo</b> · password <code>demo1234</code> for all three</p>
+      <div class="demo-accounts">
+        <button data-u="admin"><b>Management</b><small>admin</small></button>
+        <button data-u="guard"><b>Gate guard</b><small>guard</small></button>
+        <button data-u="resident"><b>Resident</b><small>resident · A-12</small></button>
       </div>
     </div>
-  </section>
-</main>
+  </div>
+  <p class="login-foot">A product by <a href="https://twinstackstudio.com" target="_blank" rel="noopener">TwinStack Studio</a></p>
+</section>
 
+<!-- APP -->
+<div id="app" class="app" hidden>
+  <aside class="side" id="side">
+    <div class="side-brand"><img src="/logo.png" alt=""><div><b id="soc-name">Society</b><small>TwinStack Gate</small></div></div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div class="who"><b id="who-name"></b><small id="who-role"></small></div>
+      <button class="btn ghost small" id="logout">Log out</button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menu" aria-label="Menu">☰</button>
+      <h1 id="page-title"></h1>
+      <div class="top-right">
+        <span class="clock" id="clock"></span>
+        <span class="demo-pill" id="demo-pill" hidden>Demo</span>
+      </div>
+    </header>
+    <main id="view"></main>
+  </div>
+</div>
+<div class="scrim" id="scrim" hidden></div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true">
+    <div class="modal-head"><h3 id="modal-title"></h3><button class="icon-btn" id="modal-close" aria-label="Close">×</button></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+<div id="alert-banner" class="alert-banner" hidden></div>
 <div id="toast" class="toast" hidden></div>
-<script src="app.js?v=6"></script>
+<div id="tip" class="tip" hidden></div>
+<script src="gate.js?v=3"></script>
 </body>
 </html>

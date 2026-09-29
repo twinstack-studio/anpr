@@ -1397,7 +1397,7 @@ async def ask_resident(ev: int, request: Request, u: dict = Depends(STAFF)):
     society_push.send([dict(x) for x in subs], {
         "title": f"{visitor} is at the gate",
         "body": f"{e['plate'] or 'Plate not read'} · {e['vehicle'] or 'Vehicle'} · Let them in?",
-        "tag": f"req-{rid}", "request_id": rid, "url": "/society/#/home"}, on_gone=_drop_sub)
+        "tag": f"req-{rid}", "request_id": rid, "url": "/#/home"}, on_gone=_drop_sub)
     return dict(row, notified=len(subs))
 
 
@@ -1463,7 +1463,7 @@ def push_test(u: dict = Depends(ANY)):
     with db() as c:
         subs = c.execute("select endpoint, keys from soc_push where user_id=%s", (u["id"],)).fetchall()
     society_push.send([dict(x) for x in subs], {"title": "Notifications are on", "body": "You will be asked here when a visitor for your house is at the gate.",
-                                                "tag": "test", "url": "/society/#/home"}, on_gone=_drop_sub)
+                                                "tag": "test", "url": "/#/home"}, on_gone=_drop_sub)
     return {"sent": len(subs)}
 
 

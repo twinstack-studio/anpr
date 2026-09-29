@@ -9,9 +9,9 @@ self.addEventListener("push", (e) => {
   e.waitUntil(self.registration.showNotification(d.title || "TwinStack Gate", {
     body: d.body || "",
     tag: d.tag,
-    icon: "/society/icon-192.png",
-    badge: "/society/icon-192.png",
-    data: { url: d.url || "/society/", request_id: d.request_id },
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    data: { url: d.url || "/", request_id: d.request_id },
     requireInteraction: ask,
     vibrate: ask ? [200, 100, 200, 100, 200] : [100],
     actions: ask ? [{ action: "approved", title: "✓ Let in" }, { action: "rejected", title: "✗ Refuse" }] : [],
@@ -28,13 +28,13 @@ self.addEventListener("notificationclick", (e) => {
     }).then(async (r) => {
       const msg = r.ok ? (e.action === "approved" ? "The guard has been told to let them in." : "The guard has been told to refuse.")
         : ((await r.json().catch(() => ({}))).detail || "Could not send your answer. Open the app.");
-      return self.registration.showNotification(r.ok ? "Answer sent" : "Not sent", { body: msg, tag: "answer", icon: "/society/icon-192.png" });
-    }).catch(() => self.clients.openWindow(url || "/society/")));
+      return self.registration.showNotification(r.ok ? "Answer sent" : "Not sent", { body: msg, tag: "answer", icon: "/icon-192.png" });
+    }).catch(() => self.clients.openWindow(url || "/")));
     return;
   }
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
-    const open = list.find((c) => c.url.includes("/society/"));
-    if (open) { open.navigate(url || "/society/").catch(() => {}); return open.focus(); }
-    return self.clients.openWindow(url || "/society/");
+    const open = list[0];
+    if (open) { open.navigate(url || "/").catch(() => {}); return open.focus(); }
+    return self.clients.openWindow(url || "/");
   }));
 });
