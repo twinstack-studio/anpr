@@ -63,7 +63,6 @@ if [ ! -f "$ENV" ]; then
 ANPR_DSN=postgresql:///gate?host=/var/run/postgresql
 ANPR_DEVICE=$DEVICE
 SOC_DEMO=0
-SOC_ONLY=1
 SOC_NAME=${SOC_NAME:-Our Society}
 SOC_ADMIN_USER=${SOC_ADMIN_USER:-admin}
 SOC_ADMIN_PASSWORD=$SOC_ADMIN_PASSWORD
@@ -113,7 +112,7 @@ chmod 755 /etc/cron.daily/twinstack-gate-backup
 IP=$(hostname -I | awk '{print $1}')
 echo
 echo "Done. Waiting for the app to start..."
-for i in $(seq 1 60); do curl -fs "http://127.0.0.1:$PORT/society/" >/dev/null && break; sleep 2; done
+for i in $(seq 1 60); do curl -fs "http://127.0.0.1:$PORT/" >/dev/null && break; sleep 2; done
 systemctl is-active twinstack-gate
 echo "Open http://$IP:$PORT on the guard PC or any phone on the society's Wi-Fi."
 echo "Log in as ${SOC_ADMIN_USER:-admin}, then add houses, vehicles, guards and the gate camera (Cameras page)."

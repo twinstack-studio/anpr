@@ -1,4 +1,4 @@
-"""TwinStack ANPR web app: upload videos/photos, watch them processed live, browse the vehicle log."""
+"""TwinStack Gate web app: the society gate system (web/), plus clip uploads run through the ANPR pipeline."""
 import os
 import queue
 import shutil
@@ -11,11 +11,10 @@ from datetime import timedelta, timezone
 from pathlib import Path
 
 import cv2
-import numpy as np
 import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import society
@@ -27,7 +26,6 @@ UPLOADS, RESULTS = DATA / "uploads", DATA / "results"
 for d in (UPLOADS, RESULTS):
     d.mkdir(parents=True, exist_ok=True)
 DSN = os.environ.get("ANPR_DSN", "postgresql:///anpr?host=/var/run/postgresql")
-GATE_ONLY = os.environ.get("SOC_ONLY") == "1"  # a society's gate box: "/" opens the gate app, not the plate-reading demo
 MAX_UPLOAD = 95 * 1024 * 1024  # Cloudflare rejects request bodies over 100 MB
 MAX_SECONDS = 45.0
 UPLOADS_PER_HOUR = 8
@@ -37,7 +35,6 @@ PKT = timezone(timedelta(hours=5))
 app = FastAPI(title="TwinStack ANPR", docs_url=None, redoc_url=None)
 engine: ANPR | None = None
 jobs_q: "queue.Queue[str]" = queue.Queue()
-live_frames: dict[str, bytes] = {}
 upload_log: dict[str, deque] = defaultdict(deque)
 
 
@@ -124,8 +121,6 @@ def worker():
         except Exception as e:  # noqa: BLE001
             with db() as c:
                 c.execute("update jobs set status='failed', error=%s where id=%s", (str(e)[:500], job_id))
-        finally:
-            live_frames.pop(job_id, None)
 
 
 def run_job(job_id: str):
@@ -140,11 +135,6 @@ def run_job(job_id: str):
     def progress(p, _elapsed):
         with db() as c:
             c.execute("update jobs set progress=%s where id=%s", (p, job_id))
-
-    def frame(img):
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        if ok:
-            live_frames[job_id] = buf.tobytes()
 
     assert engine is not None
     if job["kind"] == "image":
@@ -162,7 +152,7 @@ def run_job(job_id: str):
                          "t_first": 0, "t_last": 0, "direction": None, "plate_img": f"plate_{i}.jpg", "vehicle_img": None})
         duration = 0.0
     else:
-        recs = engine.process_video(src, out / "annotated.mp4", out, on_progress=progress, on_frame=frame, max_seconds=MAX_SECONDS)
+        recs = engine.process_video(src, out / "annotated.mp4", out, on_progress=progress, max_seconds=MAX_SECONDS)
         cap = cv2.VideoCapture(str(src))
         duration = min(MAX_SECONDS, (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / (cap.get(cv2.CAP_PROP_FPS) or 25))
         cap.release()
@@ -198,10 +188,8 @@ async def create_job(request: Request, file: UploadFile = File(...), gate: str =
     log = upload_log[ip]
     while log and now - log[0] > 3600:
         log.popleft()
-    for_society = soc == "1"
-    if for_society:
-        society.need("admin", "guard")(society.current_user(request))
-    if len(log) >= UPLOADS_PER_HOUR * (3 if for_society else 1):
+    society.need("admin", "guard")(society.current_user(request))  # only the gate app uploads clips now
+    if len(log) >= UPLOADS_PER_HOUR * 3:
         raise HTTPException(429, "Upload limit reached for this hour. Please try again later.")
     ext = Path(file.filename or "").suffix.lower()
     kind = "image" if ext in {".jpg", ".jpeg", ".png", ".webp"} else "video" if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"} else None
@@ -223,7 +211,7 @@ async def create_job(request: Request, file: UploadFile = File(...), gate: str =
     log.append(now)
     with db() as c:
         c.execute("insert into jobs (id, kind, filename, gate, society) values (%s,%s,%s,%s,%s)",
-                  (job_id, kind, (file.filename or "upload")[:120], gate, for_society))
+                  (job_id, kind, (file.filename or "upload")[:120], gate, True))
     jobs_q.put(job_id)
     return {"id": job_id, "kind": kind}
 
@@ -233,13 +221,6 @@ def _job_json(j):
     j["created_at"] = j["created_at"].isoformat()
     j["queue_position"] = None
     return j
-
-
-@app.get("/api/jobs")
-def list_jobs():
-    with db() as c:
-        rows = c.execute("select * from jobs where not society order by sample desc, created_at desc limit 40").fetchall()
-    return [_job_json(r) for r in rows]
 
 
 @app.get("/api/jobs/{job_id}")
@@ -264,24 +245,6 @@ def _det_json(d):
     return d
 
 
-@app.get("/api/jobs/{job_id}/live")
-def live(job_id: str):
-    def gen():
-        last = None
-        idle = 0
-        while idle < 600:
-            fr = live_frames.get(job_id)
-            if fr is not None and fr is not last:
-                last, idle = fr, 0
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + fr + b"\r\n"
-            else:
-                idle += 1
-                if fr is None and idle > 20:
-                    break
-            time.sleep(0.05)
-    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-
 @app.get("/api/jobs/{job_id}/file/{name}")
 def job_file(job_id: str, name: str):
     if not job_id.isalnum() or "/" in name or ".." in name:
@@ -294,81 +257,6 @@ def job_file(job_id: str, name: str):
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
 
 
-@app.get("/api/detections")
-def detections(q: str = "", limit: int = 200):
-    q = "".join(ch for ch in q.upper() if ch.isalnum())
-    with db() as c:
-        rows = c.execute(
-            """select d.*, j.filename, w.kind as watch_kind, w.note as watch_note from detections d
-               join jobs j on j.id=d.job_id left join watchlist w on w.plate=d.plate
-               where d.plate is not null and (%s='' or replace(d.plate,'-','') like %s)
-               order by d.seen_at desc limit %s""", (q, f"%{q}%", min(limit, 500))).fetchall()
-    return [_det_json(r) for r in rows]
-
-
-@app.get("/api/stats")
-def stats():
-    with db() as c:
-        s = c.execute("""select count(*) as vehicles, count(plate) as plates, count(distinct plate) as unique_plates,
-                         coalesce(avg(confidence) filter (where plate is not null),0) as avg_conf from detections""").fetchone()
-        by_type = c.execute("select vehicle, count(*) n from detections group by vehicle order by n desc").fetchall()
-        s["alerts"] = c.execute("select count(*) n from detections d join watchlist w on w.plate=d.plate").fetchone()["n"]
-        s["videos"] = c.execute("select count(*) n, coalesce(sum(duration_s),0) secs from jobs where status='done'").fetchone()
-    s["by_type"] = by_type
-    return s
-
-
-@app.get("/api/parking")
-def parking(rate_first: int = 50, rate_next: int = 30):
-    """Match each entry with the next exit of the same plate. Fee: first hour + each extra started hour."""
-    with db() as c:
-        rows = c.execute("""select plate, vehicle, gate, seen_at, plate_img, job_id from detections
-                            where plate is not null and gate in ('entry','exit') order by seen_at""").fetchall()
-    open_, sessions = {}, []
-    for r in rows:
-        if r["gate"] == "entry":
-            open_[r["plate"]] = r
-        elif r["plate"] in open_:
-            e = open_.pop(r["plate"])
-            mins = max(1, int((r["seen_at"] - e["seen_at"]).total_seconds() // 60))
-            hours = -(-mins // 60)
-            sessions.append({"plate": r["plate"], "vehicle": e["vehicle"], "entry": e["seen_at"].astimezone(PKT).isoformat(),
-                             "exit": r["seen_at"].astimezone(PKT).isoformat(), "minutes": mins,
-                             "fee": rate_first + max(0, hours - 1) * rate_next, "plate_img": e["plate_img"], "job_id": e["job_id"]})
-    inside = [{"plate": p, "vehicle": e["vehicle"], "entry": e["seen_at"].astimezone(PKT).isoformat(), "plate_img": e["plate_img"],
-               "job_id": e["job_id"]} for p, e in open_.items()]
-    return {"sessions": sessions[::-1], "inside": inside[::-1]}
-
-
-@app.get("/api/watchlist")
-def get_watchlist():
-    with db() as c:
-        return [dict(r, created_at=r["created_at"].isoformat()) for r in c.execute("select * from watchlist order by created_at desc")]
-
-
-@app.post("/api/watchlist")
-async def add_watch(request: Request):
-    body = await request.json()
-    from .plates import normalize
-
-    plate, _ = normalize(str(body.get("plate", "")))
-    kind = body.get("kind") if body.get("kind") in ("blacklist", "vip", "staff") else "blacklist"
-    if len(plate) < 3:
-        raise HTTPException(400, "Enter a plate number like LEB-1234")
-    with db() as c:
-        c.execute("""insert into watchlist (plate, kind, note) values (%s,%s,%s)
-                     on conflict (plate) do update set kind=excluded.kind, note=excluded.note""",
-                  (plate, kind, str(body.get("note", ""))[:120]))
-    return {"plate": plate}
-
-
-@app.delete("/api/watchlist/{plate}")
-def del_watch(plate: str):
-    with db() as c:
-        c.execute("delete from watchlist where plate=%s", (plate,))
-    return {"ok": True}
-
-
 @app.get("/api/health")
 def health():
     return {"ok": engine is not None, "queue": jobs_q.qsize()}
@@ -377,12 +265,11 @@ def health():
 app.include_router(society.router)
 
 
-@app.middleware("http")
-async def gate_host(request: Request, call_next):
-    """gate.twinstackstudio.com, and every gate box (SOC_ONLY=1), open the society app."""
-    if request.url.path == "/" and (GATE_ONLY or request.headers.get("host", "").startswith("gate.")):
-        return RedirectResponse("/society/")
-    return await call_next(request)
+@app.get("/society")
+@app.get("/society/{rest:path}")
+def old_society_links(rest: str = ""):
+    """The gate app used to live under /society/; old links, QR codes and PDFs still point there."""
+    return RedirectResponse("/", status_code=301)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")
